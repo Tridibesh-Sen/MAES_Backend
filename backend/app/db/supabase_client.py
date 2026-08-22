@@ -1,32 +1,47 @@
+import logging
+from typing import Optional
 from supabase import create_client, Client
 from app.config import settings
 
-supabase: Client = create_client(
-    settings.supabase_url,
-    settings.supabase_service_role_key
-)
+logger = logging.getLogger(__name__)
 
-def get_supabase() -> Client:
+def _init_supabase() -> Optional[Client]:
+    if settings.supabase_url and settings.supabase_service_role_key:
+        try:
+            return create_client(settings.supabase_url, settings.supabase_service_role_key)
+        except Exception as e:
+            logger.warning(f"Supabase client initialization failed ({e}). Running in offline/memory mode.")
+            return None
+    return None
+
+supabase: Optional[Client] = _init_supabase()
+
+def get_supabase() -> Optional[Client]:
     """Returns the primary Supabase client."""
     return supabase
 
 def get_learner_model(student_id: str) -> dict:
+    if not supabase:
+        return {}
     try:
         response = supabase.table("learner_models").select("*").eq("student_id", student_id).execute()
         if response.data:
             return response.data[0]
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"Learner models table missing or error: {e}")
+        logger.warning(f"Learner models table missing or error: {e}")
     return {}
 
 def update_learner_model(student_id: str, updates: dict):
+    if not supabase:
+        return
     try:
         supabase.table("learner_models").upsert({"student_id": student_id, **updates}).execute()
-    except Exception as e:
+    except Exception:
         pass
 
 def create_session(session_id: str, student_id: str, domain: str, notebook_id: str = None):
+    if not supabase:
+        return
     data = {
         "id": session_id,
         "student_id": student_id,
@@ -38,11 +53,11 @@ def create_session(session_id: str, student_id: str, domain: str, notebook_id: s
     try:
         supabase.table("sessions").insert(data).execute()
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"Failed to create session in Supabase: {e}")
+        logger.warning(f"Failed to create session in Supabase: {e}")
 
 def end_session(session_id: str):
-    # Just update the ended_at timestamp and set is_active = False
+    if not supabase:
+        return
     import datetime
     try:
         supabase.table("sessions").update({
@@ -53,7 +68,8 @@ def end_session(session_id: str):
         pass
 
 def save_message(session_id: str, role: str, content: str):
-    """Saves a dialogue message turn directly into the Supabase database messages table."""
+    if not supabase:
+        return
     try:
         supabase.table("messages").insert({
             "session_id": session_id,
@@ -61,43 +77,24 @@ def save_message(session_id: str, role: str, content: str):
             "content": content
         }).execute()
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"Failed to log message to Supabase: {e}")
-
-def save_audit_log(session_id: str, event_type: str, text: str, status: str):
-    """Saves a telemetry audit log for the session."""
-    try:
-        supabase.table("audit_logs").insert({
-            "session_id": session_id,
-            "event_type": event_type,
-            "text": text,
-            "status": status
-        }).execute()
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"Failed to log audit event to Supabase: {e}")
-
-def get_session_messages(session_id: str) -> list:
-    """Retrieves all dialogue turns for a specific session."""
-    try:
-        res = supabase.table("messages").select("*").eq("session_id", session_id).order("created_at").execute()
-        return res.data or []
-    except Exception:
-        return []
+        logger.warning(f"Failed to save message to Supabase: {e}")
 
 def get_student_history(student_id: str) -> list:
-    """Retrieves all dialogue turns across all sessions for a specific student for long-term memory."""
-    try:
-        # Get all sessions for this student
-        sess_res = supabase.table("sessions").select("id").eq("student_id", student_id).execute()
-        sess_ids = [s["id"] for s in sess_res.data] if sess_res.data else []
-        if not sess_ids:
-            return []
-        
-        # Fetch all messages for these sessions
-        msg_res = supabase.table("messages").select("*").in_("session_id", sess_ids).order("created_at").execute()
-        return msg_res.data or []
-    except Exception:
+    if not supabase:
         return []
-
-
+    try:
+        sessions_res = supabase.table("sessions").select("id").eq("student_id", student_id).execute()
+        if not sessions_res.data:
+            return []
+        session_ids = [s["id"] for s in sessions_res.data]
+        
+        messages_res = supabase.table("messages").select("role, content, created_at")\
+            .in_("session_id", session_ids)\
+            .order("created_at", desc=False)\
+            .execute()
+            
+        history = [{"role": m["role"], "text": m["content"]} for m in messages_res.data]
+        return history
+    except Exception as e:
+        logger.warning(f"Failed to fetch student history: {e}")
+        return []

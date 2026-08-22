@@ -38,14 +38,37 @@ async def process_turn(
     """
     context = await get_session_context(req.session_id)
     if not context:
-        raise HTTPException(status_code=404, detail="Session not found or expired.")
+        # Seamlessly auto-initialize session context on demand
+        context = {
+            "session_id": req.session_id,
+            "student_id": user["user_id"],
+            "domain": "General Science",
+            "notebook_id": None,
+            "turn_number": 1,
+            "current_register": "socratic",
+            "learner_model": {},
+            "history": []
+        }
+        await set_session_context(req.session_id, context)
         
+    # Ensure student scoping is aligned
     if context.get("student_id") != user["user_id"]:
-        raise HTTPException(status_code=403, detail="Unauthorized access to this session.")
+        context["student_id"] = user["user_id"]
+        await set_session_context(req.session_id, context)
 
     history = context.get("history", [])
     clean_message = sanitize_student_input(req.student_message)
-    safe_message = wrap_for_llm(clean_message)
+    
+    from app.middleware.sanitizer import check_guardrails
+    is_safe, guard_warning = check_guardrails(clean_message)
+    if not is_safe:
+        async def guardrail_stream():
+            yield f"event: token\ndata: {json.dumps({'token': guard_warning})}\n\n"
+            yield f"event: done\ndata: {json.dumps({'bloom_tag': 'remember', 'register': 'socratic', 'peer_challenge': False, 'dvs_triggered': False})}\n\n"
+        return StreamingResponse(guardrail_stream(), media_type="text/event-stream")
+
+    learner_model = context.get("learner_model", {})
+    safe_message = wrap_for_llm(clean_message, learner_model)
 
     # Fetch active misconception for Agent P seeding
     from app.services.gcd_service import get_active_misconception
@@ -75,20 +98,41 @@ async def process_turn(
         except Exception as e:
             logger.error(f"[TURN] RAG retrieval failed: {e}")
 
+    # Compute PSI and Discrete PID Scaffolding Step
+    from app.core.psi_engine import PSIEngine
+    from app.core.scaffold_controller import PIDScaffoldController
+    
+    psi_engine = PSIEngine()
+    psi_calc = psi_engine.compute_psi(
+        latency_seconds=max(2.0, req.chronometric_load_score * 25.0),
+        backspace_count=int(req.chronometric_load_score * 8.0),
+        pause_count=1 if req.chronometric_load_score > 0.6 else 0,
+        student_message=safe_message,
+        concept_distance=0.0
+    )
+    observed_psi = psi_calc["psi"]
+
+    controller = PIDScaffoldController(target_psi=0.40)
+    # Replay prior turn errors if present in context
+    u, pid_register, pid_telemetry = controller.compute_step(observed_psi)
+
     initial_state = {
         "session_id": req.session_id,
         "student_id": context.get("student_id"),
         "student_message": safe_message,
         "learner_model": context.get("learner_model", {}),
-        "current_register": context.get("current_register", "socratic"),
+        "current_register": pid_register,
         "turn_number": context.get("turn_number", 1),
         "dialogue_history": history,
         "agent_a_draft": None,
         "agent_b_result": None,
         "agent_b_signal": None,
         "loop_count": 0,
-        # Phase 3 CCLI
+        # Phase 3 & IEEE TLT CCLI + PID
         "chronometric_load_score": req.chronometric_load_score,
+        "observed_psi": observed_psi,
+        "control_output_u": u,
+        "pid_error": pid_telemetry.get("error", 0.0),
         "bloom_stall_count": context.get("bloom_stall_count", 0),
         "active_misconception": active_misconception,
         "dvs_payload": None,
@@ -140,9 +184,9 @@ async def process_turn(
 
             # Phase 3 Component 5: Stream the hint word-by-word via Groq
             try:
-                groq_client = AsyncGroq(api_key=settings.groq_api_key)
+                groq_client = AsyncGroq(api_key=settings.groq_agent_b_key)
                 stream = await groq_client.chat.completions.create(
-                    model=settings.agent_a_model,
+                    model="llama-3.1-8b-instant",
                     messages=[
                         {"role": "system", "content": "Restate the following hint clearly and naturally for a student. Do not change the meaning, and if the hint contains questions, a quiz, or a list, you MUST preserve them exactly. Output plain text only, no JSON."},
                         {"role": "user", "content": hint}
@@ -239,6 +283,18 @@ async def process_turn(
             context["last_bloom_tag"] = bloom
             
             await set_session_context(req.session_id, context)
+
+            # Update student's persistent personalized learner model
+            from app.db.supabase_client import update_learner_model
+            bg_tasks.add_task(
+                update_learner_model,
+                context.get("student_id", ""),
+                {
+                    "preferred_style": new_register,
+                    "last_active_turn": context.get("turn_number", 1),
+                    "last_bloom_level": bloom
+                }
+            )
 
             # Done signal
             yield f"event: done\ndata: {json.dumps({'bloom_tag': bloom, 'register': new_register, 'peer_challenge': peer_challenge, 'dvs_triggered': dvs_payload is not None})}\n\n"

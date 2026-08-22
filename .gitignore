@@ -160,3 +160,19 @@ dist-ssr
 .idea/
 .DS_Store
 Thumbs.db
+
+PRD_LLM_Pedagogical_System.md
+MAES_PRD.txt
+
+# Local workspace ignores
+.env
+.env.*
+*.env
+backend/.env
+frontend/.env
+.venv/
+node_modules/
+dist/
+backend/backend/
+DOC-*.pdf
+

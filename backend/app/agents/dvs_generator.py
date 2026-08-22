@@ -28,6 +28,12 @@ async def run_dvs_generator(state: dict) -> dict:
     Generates an inline SVG visual scaffold when Agent B decides DVS_REQUIRED.
     Triggered when student's chronometric_load_score > 0.7 (cognitively overloaded).
     """
+    try:
+        from app.main import increment_agent_call
+        increment_agent_call("dvs")
+    except Exception:
+        pass
+
     student_message = state.get("student_message", "")
     active_misconception = state.get("active_misconception") or "the concept the student is asking about"
     active_sources = state.get("active_sources", "")
@@ -43,9 +49,9 @@ Their known misconception: {active_misconception}
 Generate an SVG diagram that visually explains the core concept they are struggling with. Make it clear, labeled, and educational. Output ONLY the raw SVG, starting with <svg."""
 
     try:
-        client = AsyncGroq(api_key=settings.groq_api_key)
+        client = AsyncGroq(api_key=settings.groq_dvs_key)
         response = await client.chat.completions.create(
-            model=settings.agent_a_model,
+            model="llama-3.1-8b-instant",
             messages=[
                 {"role": "system", "content": DVS_SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt}

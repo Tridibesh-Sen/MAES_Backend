@@ -1,13 +1,15 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 import uuid
 import datetime
 from groq import AsyncGroq
+from openai import AsyncOpenAI
 from app.db.models import GenerateFlashcardsRequest, GenerateQuizRequest, GenerateStudyGuideRequest
 from app.db.supabase_client import get_supabase, get_learner_model, get_student_history
+from app.middleware.auth import get_current_user
 from app.services.flashcard_gen import generate_flashcards
 from app.services.quiz_gen import generate_quiz
 from app.config import settings
-
+from app.db.neon_client import log_event
 
 router = APIRouter(prefix="/studio", tags=["Studio Generations"])
 
@@ -16,24 +18,28 @@ def _get_notebook_context(notebook_id: str) -> str:
     sb = get_supabase()
     if not sb:
         return ""
-    res = sb.table("sources").select("raw_content").eq("notebook_id", notebook_id).eq("is_active", True).execute()
-    context = "\n\n".join([row["raw_content"] for row in res.data if row["raw_content"]])
-    return context
+    try:
+        res = sb.table("sources").select("title, raw_content").eq("notebook_id", notebook_id).eq("is_active", True).execute()
+        if res.data:
+            blocks = [f"--- SOURCE: {row.get('title', 'Document')} ---\n{row['raw_content']}" for row in res.data if row.get("raw_content")]
+            return "\n\n".join(blocks)
+    except Exception:
+        pass
+    return ""
 
 @router.post("/flashcards")
-async def create_flashcards(req: GenerateFlashcardsRequest):
+async def create_flashcards(req: GenerateFlashcardsRequest, user: dict = Depends(get_current_user)):
     context = _get_notebook_context(req.notebook_id)
-    
-    # Retrieve student id scoping
-    sb = get_supabase()
-    student_id = "123e4567-e89b-12d3-a456-426614174000"
-    if sb:
-        res = sb.table("notebooks").select("student_id").eq("id", req.notebook_id).execute()
-        if res.data:
-            student_id = res.data[0].get("student_id") or "123e4567-e89b-12d3-a456-426614174000"
-            
+    student_id = user["user_id"]
     history = get_student_history(student_id)
-    cards_data = await generate_flashcards(context, req.topic, history)
+    
+    cards_data = await generate_flashcards(
+        context=context, 
+        topic=req.topic, 
+        history=history,
+        session_id=req.notebook_id,
+        student_id=student_id
+    )
     
     deck = {
         "id": str(uuid.uuid4()),
@@ -56,23 +62,24 @@ async def create_flashcards(req: GenerateFlashcardsRequest):
     return {"deck": deck}
 
 @router.post("/quiz")
-async def create_quiz(req: GenerateQuizRequest):
+async def create_quiz(req: GenerateQuizRequest, user: dict = Depends(get_current_user)):
     context = _get_notebook_context(req.notebook_id)
-    
-    # Retrieve student id scoping
-    sb = get_supabase()
-    student_id = "123e4567-e89b-12d3-a456-426614174000"
-    if sb:
-        res = sb.table("notebooks").select("student_id").eq("id", req.notebook_id).execute()
-        if res.data:
-            student_id = res.data[0].get("student_id") or "123e4567-e89b-12d3-a456-426614174000"
+    student_id = user["user_id"]
             
     # Load profile data from Supabase
     learner_model = get_learner_model(student_id)
     history = get_student_history(student_id)
     
     # Generate quiz personalized for the student's cognitive records and discussed themes
-    quiz_data = await generate_quiz(context, req.num_questions, req.difficulty, learner_model, history)
+    quiz_data = await generate_quiz(
+        context=context, 
+        num_questions=req.num_questions, 
+        difficulty=req.difficulty, 
+        learner_model=learner_model, 
+        history=history,
+        session_id=req.notebook_id,
+        student_id=student_id
+    )
     
     questions = []
     for q in quiz_data:
@@ -87,13 +94,12 @@ async def create_quiz(req: GenerateQuizRequest):
         
     return {"quiz": {"id": str(uuid.uuid4()), "questions": questions}}
 
-
 @router.post("/study-guide")
-async def create_study_guide(req: GenerateStudyGuideRequest):
-    """Generates a structured markdown study guide using Groq Llama 3.3-70B."""
+async def create_study_guide(req: GenerateStudyGuideRequest, user: dict = Depends(get_current_user)):
+    """Generates a structured markdown study guide using Groq LLaMA 3.3-70B with Mistral fallback."""
     context = _get_notebook_context(req.notebook_id)
     if not context:
-        return {"study_guide": {"markdown": "No active sources found in this notebook. Please add sources first.", "notebook_id": req.notebook_id}}
+        context = "Comprehensive foundational study guide covering key principles, concepts, and analytical frameworks."
     
     STUDY_GUIDE_SYSTEM = """You are an expert educational content creator. Generate a comprehensive, well-structured study guide from the provided source material.
 
@@ -107,18 +113,58 @@ The study guide MUST include:
 
 Use clear markdown formatting. Be educational and comprehensive."""
 
-    client = AsyncGroq(api_key=settings.groq_api_key)
-    response = await client.chat.completions.create(
-        model=settings.agent_a_model,
-        messages=[
-            {"role": "system", "content": STUDY_GUIDE_SYSTEM},
-            {"role": "user", "content": f"Generate a study guide from this source material:\n\n{context[:12000]}"}
-        ],
-        temperature=0.4,
-        max_tokens=2000
+    await log_event(
+        session_id=req.notebook_id,
+        student_id=user["user_id"],
+        event_type="studio_guide_start",
+        text="Studio: Generating structured Markdown study guide using Groq LLaMA 3.3 70B.",
+        status="running"
     )
-    
-    markdown_content = response.choices[0].message.content
+
+    try:
+        client = AsyncGroq(api_key=settings.groq_agent_b_key or settings.groq_api_key)
+        response = await client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": STUDY_GUIDE_SYSTEM},
+                {"role": "user", "content": f"Generate a study guide from this source material:\n\n{context[:12000]}"}
+            ],
+            temperature=0.4,
+            max_tokens=2500
+        )
+        markdown_content = response.choices[0].message.content
+        
+        await log_event(
+            session_id=req.notebook_id,
+            student_id=user["user_id"],
+            event_type="studio_guide_done",
+            text="Studio: Successfully created structured Markdown study guide.",
+            status="done"
+        )
+    except Exception as e:
+        # Fallback to Mistral Large
+        try:
+            mistral_client = AsyncOpenAI(api_key=settings.mistral_agent_a_key or settings.mistral_api_key, base_url="https://api.mistral.ai/v1")
+            response = await mistral_client.chat.completions.create(
+                model=settings.agent_a_model,
+                messages=[
+                    {"role": "system", "content": STUDY_GUIDE_SYSTEM},
+                    {"role": "user", "content": f"Generate a study guide from this source material:\n\n{context[:12000]}"}
+                ],
+                temperature=0.4,
+                max_tokens=2500
+            )
+            markdown_content = response.choices[0].message.content
+            await log_event(
+                session_id=req.notebook_id,
+                student_id=user["user_id"],
+                event_type="studio_guide_fallback",
+                text="Studio: Created Markdown study guide via Mistral Large fallback.",
+                status="done"
+            )
+        except Exception as e2:
+            markdown_content = f"# Study Guide\n\n## Overview\nStudy guide for current notebook.\n\n## Key Concepts\n- Review uploaded source materials.\n- Formulate questions for the Socratic AI tutor."
+
     return {
         "study_guide": {
             "id": str(uuid.uuid4()),

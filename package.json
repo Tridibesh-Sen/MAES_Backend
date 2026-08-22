@@ -1,0 +1,14 @@
+{
+  "name": "maes-workspace",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Multi-Agent Educational Scaffolding System (MAES) Workspace",
+  "scripts": {
+    "dev": "concurrently \"npm run dev --prefix frontend\" \"cd backend && .venv\\Scripts\\uvicorn app.main:app --reload\"",
+    "install:all": "npm install && npm install --prefix frontend",
+    "test:backend": "cd backend && .venv\\Scripts\\pytest tests/ -v"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

@@ -11,19 +11,48 @@ function App() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setLoading(false);
-    });
+    const checkAuth = async () => {
+      try {
+        const { data: { session: sbSession } } = await supabase.auth.getSession();
+        if (sbSession) {
+          setSession(sbSession);
+        } else {
+          const demo = localStorage.getItem('maes_demo_session');
+          setSession(demo ? JSON.parse(demo) : null);
+        }
+      } catch (e) {
+        const demo = localStorage.getItem('maes_demo_session');
+        setSession(demo ? JSON.parse(demo) : null);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    checkAuth();
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
+    } = supabase.auth.onAuthStateChange((_event, sbSession) => {
+      if (sbSession) {
+        setSession(sbSession);
+      } else {
+        const demo = localStorage.getItem('maes_demo_session');
+        setSession(demo ? JSON.parse(demo) : null);
+      }
     });
+
+    const handleCustomAuth = () => {
+      const demo = localStorage.getItem('maes_demo_session');
+      setSession(demo ? JSON.parse(demo) : null);
+    };
+
+    window.addEventListener('maes_auth_change', handleCustomAuth);
+    window.addEventListener('storage', handleCustomAuth);
 
     return () => {
       subscription.unsubscribe();
+      window.removeEventListener('maes_auth_change', handleCustomAuth);
+      window.removeEventListener('storage', handleCustomAuth);
     };
   }, []);
 

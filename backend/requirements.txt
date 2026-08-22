@@ -37,6 +37,10 @@ json-repair
 # Utilities
 tenacity
 
+# Testing
+pytest
+
 # Phase 3: Markdown rendering
 markdown
 mistune
+

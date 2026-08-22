@@ -30,6 +30,16 @@ async def start_session(req: SessionStartRequest, user: dict = Depends(get_curre
         "history": []
     })
     
+    # Log session start
+    from app.db.neon_client import log_event
+    await log_event(
+        session_id=session_id,
+        student_id=student_id,
+        event_type="session_started",
+        text=f"Session: Initialized active tutoring session '{session_id}' in domain '{req.domain}'.",
+        status="done"
+    )
+    
     return {"session_id": session_id}
 
 @router.post("/end")
@@ -42,6 +52,17 @@ async def end_session(req: SessionEndRequest, user: dict = Depends(get_current_u
     await asyncio.to_thread(db_end_session, req.session_id)
     # Clear cache
     await delete_session(req.session_id)
+    
+    # Log session end
+    from app.db.neon_client import log_event
+    await log_event(
+        session_id=req.session_id,
+        student_id=user["user_id"],
+        event_type="session_ended",
+        text=f"Session: Tutoring session '{req.session_id}' concluded and context cleared.",
+        status="done"
+    )
+    
     return {"status": "ended"}
 
 
