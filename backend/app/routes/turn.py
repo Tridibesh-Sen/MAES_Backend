@@ -68,7 +68,8 @@ async def process_turn(
         return StreamingResponse(guardrail_stream(), media_type="text/event-stream")
 
     learner_model = context.get("learner_model", {})
-    safe_message = wrap_for_llm(clean_message, learner_model)
+    # clean_message is sanitized of any malicious code/injection
+    safe_message = clean_message
 
     # Fetch active misconception for Agent P seeding
     from app.services.gcd_service import get_active_misconception
@@ -81,7 +82,7 @@ async def process_turn(
     if notebook_id:
         try:
             from app.services.embedding_service import retrieve_relevant_chunks
-            chunks = retrieve_relevant_chunks(req.student_message, notebook_id, top_k=5)
+            chunks = retrieve_relevant_chunks(clean_message, notebook_id, top_k=5)
             if chunks:
                 active_sources = "\n\n".join([f"[Chunk {i+1}]\n{c}" for i, c in enumerate(chunks)])
                 logger.info(f"[TURN] Retrieved {len(chunks)} RAG chunks for notebook {notebook_id}")
@@ -107,7 +108,7 @@ async def process_turn(
         latency_seconds=max(2.0, req.chronometric_load_score * 25.0),
         backspace_count=int(req.chronometric_load_score * 8.0),
         pause_count=1 if req.chronometric_load_score > 0.6 else 0,
-        student_message=safe_message,
+        student_message=clean_message,
         concept_distance=0.0
     )
     observed_psi = psi_calc["psi"]
@@ -119,7 +120,7 @@ async def process_turn(
     initial_state = {
         "session_id": req.session_id,
         "student_id": context.get("student_id"),
-        "student_message": safe_message,
+        "student_message": clean_message,
         "learner_model": context.get("learner_model", {}),
         "current_register": pid_register,
         "turn_number": context.get("turn_number", 1),
