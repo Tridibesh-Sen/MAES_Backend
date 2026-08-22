@@ -77,11 +77,16 @@ function App() {
           element={<NotebookView />} 
           key="notebook-view-route"
         />
-        {/* Redirect any stray /login navigation to root */}
+        {/* Redirect any stray /login or unknown routes to root */}
         <Route 
           path="/login" 
-          element={<Navigate to="/" />} 
+          element={<Navigate to="/" replace />} 
           key="login-route"
+        />
+        <Route 
+          path="*" 
+          element={<Navigate to="/" replace />} 
+          key="catch-all-route"
         />
       </Routes>
     </Router>
