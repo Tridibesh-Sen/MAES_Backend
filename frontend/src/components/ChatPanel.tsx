@@ -6,7 +6,7 @@
  * - Peer Perspective bubbles
  */
 import React, { useState, useRef } from 'react';
-import { MessageSquare, Send, Brain, Wifi } from 'lucide-react';
+import { MessageSquare, Send, Brain } from 'lucide-react';
 import { useCCLI } from '../hooks/useCCLI';
 import DVSViewer from './DVSViewer';
 
@@ -235,15 +235,30 @@ export default function ChatPanel({
               🧠 High load
             </span>
           )}
-          {sessionId ? (
-            <span className={`badge ${isOnline ? 'badge-green' : 'badge-stone'}`} style={{ fontSize: '0.65rem' }}>
-              <Wifi size={10} style={{ opacity: isOnline ? 1 : 0.5 }} /> {isOnline ? 'Live' : 'Disconnected'}
-            </span>
-          ) : (
-            <span className="badge badge-stone" style={{ fontSize: '0.65rem' }}>
-              <Wifi size={10} style={{ opacity: 0.5 }} /> Offline
-            </span>
-          )}
+          <span
+            className={`badge ${isOnline ? 'badge-green' : 'badge-stone'}`}
+            style={{
+              fontSize: '0.65rem',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '5px',
+              fontWeight: 600,
+              color: isOnline ? 'var(--green-800)' : '#DC2626',
+              background: isOnline ? 'var(--green-100)' : 'rgba(220,38,38,0.1)',
+              border: `1px solid ${isOnline ? 'rgba(74,124,89,0.2)' : 'rgba(220,38,38,0.2)'}`
+            }}
+          >
+            <span
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: '50%',
+                background: isOnline ? '#10B981' : '#DC2626',
+                display: 'inline-block'
+              }}
+            />
+            {isOnline ? 'Agents Online' : 'Agents Offline'}
+          </span>
         </div>
       </div>
 

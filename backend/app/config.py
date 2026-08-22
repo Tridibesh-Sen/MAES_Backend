@@ -5,27 +5,35 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     app_env: str = "development"
-    secret_key: str
+    secret_key: str = "dev-secret-key-change-in-production"
     
-    supabase_url: str
-    supabase_service_role_key: str
-    supabase_db_url: str
+    supabase_url: str = ""
+    supabase_service_role_key: str = ""
+    supabase_db_url: str = ""
     
-    neon_database_url: str
+    neon_database_url: str = ""
     
-    upstash_redis_rest_url: str
-    upstash_redis_rest_token: str
+    upstash_redis_rest_url: str = ""
+    upstash_redis_rest_token: str = ""
     
-    groq_api_key: str
-    gemini_api_key: str
-    openrouter_api_key: str
-    mistral_api_key: str
+    # Global keys (loaded dynamically from .env)
+    groq_api_key: str = ""
+    mistral_api_key: str = ""
+    gemini_api_key: str = ""
+    openrouter_api_key: str = ""
+
+    # Per-Agent dedicated keys (loaded dynamically from .env)
+    mistral_agent_a_key: str = ""
+    mistral_agent_p_key: str = ""
+    mistral_agent_s_key: str = ""
+    groq_agent_b_key: str = ""
+    groq_dvs_key: str = ""
     
-    # Component 1 deviation: Groq for A, Mistral for B & P
-    agent_a_model: str = "llama-3.1-8b-instant"
-    agent_b_model: str = "mistral-large-latest"
+    # Model selections
+    agent_a_model: str = "mistral-large-latest"
+    agent_b_model: str = "llama-3.3-70b-versatile"
     agent_p_model: str = "mistral-large-latest"
-    fallback_model: str = "mistralai/mistral-7b-instruct"
+    fallback_model: str = "open-mistral-7b"
     
     session_ttl_minutes: int = 30
 

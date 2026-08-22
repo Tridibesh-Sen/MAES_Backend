@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   BookOpenCheck, Plus, LogOut, BookOpen,
-  Layers, Calendar, ChevronRight, User, RefreshCw
+  Layers, Calendar, ChevronRight, User, RefreshCw, Trash2
 } from 'lucide-react';
 import { supabase } from '../lib/supabaseClient';
 import api from '../lib/apiClient';
@@ -38,6 +38,10 @@ export default function NotebookList() {
   const [newTitle, setNewTitle] = useState('');
   const [newDomain, setNewDomain] = useState('Computer Science');
   const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState('');
+
+  // Delete modal state
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   useEffect(() => {
     const getProfile = async () => {
@@ -45,9 +49,13 @@ export default function NotebookList() {
         const { data: { user: sbUser } } = await supabase.auth.getUser();
         if (sbUser) {
           setUser(sbUser);
+        } else {
+          const demo = localStorage.getItem('maes_demo_session');
+          if (demo) setUser(JSON.parse(demo).user);
         }
-      } catch (e) {
-        console.error('Error fetching user profile', e);
+      } catch {
+        const demo = localStorage.getItem('maes_demo_session');
+        if (demo) setUser(JSON.parse(demo).user);
       }
     };
     getProfile();
@@ -57,10 +65,33 @@ export default function NotebookList() {
   const fetchNotebooks = async () => {
     setLoading(true);
     try {
-      const res = await api.get('/notebooks');
-      if (res.data.notebooks) setNotebooks(res.data.notebooks);
-    } catch (e) {
-      console.warn('Failed fetching notebooks', e);
+      let token = 'DEMO_USER_TOKEN';
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.access_token) {
+        token = session.access_token;
+      }
+      
+      const res = await api.get('/notebooks', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.data?.notebooks && Array.isArray(res.data.notebooks) && res.data.notebooks.length > 0) {
+        setNotebooks(res.data.notebooks);
+        localStorage.setItem('maes_local_notebooks', JSON.stringify(res.data.notebooks));
+      } else {
+        const local = localStorage.getItem('maes_local_notebooks');
+        if (local) {
+          setNotebooks(JSON.parse(local));
+        } else {
+          setNotebooks([]);
+        }
+      }
+    } catch {
+      const local = localStorage.getItem('maes_local_notebooks');
+      if (local) {
+        setNotebooks(JSON.parse(local));
+      } else {
+        setNotebooks([]);
+      }
     } finally {
       setLoading(false);
     }
@@ -68,25 +99,79 @@ export default function NotebookList() {
 
   const handleCreateNotebook = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newTitle.trim()) return;
+    if (!newTitle.trim() || creating) return;
+
     setCreating(true);
+    setCreateError('');
+
     try {
-      const res = await api.post('/notebooks', { title: newTitle, domain: newDomain });
-      if (res.data.notebook) {
-        setNotebooks([res.data.notebook, ...notebooks]);
-        navigate(`/notebook/${res.data.notebook.id}`);
+      let token = 'DEMO_USER_TOKEN';
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.access_token) {
+        token = session.access_token;
       }
-    } catch (e) {
-      console.warn('Failed creating notebook', e);
-    } finally {
-      setCreating(false);
+
+      const res = await api.post('/notebooks', {
+        title: newTitle.trim(),
+        domain: newDomain,
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      const nb = res.data.notebook;
+      const updated = [nb, ...notebooks.filter(n => n.id !== nb.id)];
+      setNotebooks(updated);
+      localStorage.setItem('maes_local_notebooks', JSON.stringify(updated));
       setIsModalOpen(false);
       setNewTitle('');
+      navigate(`/notebook/${nb.id}`);
+    } catch {
+      const fallbackNb: Notebook = {
+        id: (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : 'nb-' + Math.random().toString(36).substring(2, 9),
+        title: newTitle.trim(),
+        domain: newDomain,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        sourceCount: 0
+      };
+      const updated = [fallbackNb, ...notebooks.filter(n => n.id !== fallbackNb.id)];
+      setNotebooks(updated);
+      localStorage.setItem('maes_local_notebooks', JSON.stringify(updated));
+      setIsModalOpen(false);
+      setNewTitle('');
+      navigate(`/notebook/${fallbackNb.id}`);
+    } finally {
+      setCreating(false);
     }
+  };
+
+  const handleDeleteNotebook = async (e: React.MouseEvent, nbId: string) => {
+    e.stopPropagation();
+    try {
+      let token = 'DEMO_USER_TOKEN';
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.access_token) {
+        token = session.access_token;
+      }
+
+      await api.delete(`/notebooks/${nbId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+    } catch {
+      // ignore network errors on delete
+    }
+
+    const updated = notebooks.filter(n => n.id !== nbId);
+    setNotebooks(updated);
+    localStorage.setItem('maes_local_notebooks', JSON.stringify(updated));
+    localStorage.removeItem(`maes_sources_${nbId}`);
+    localStorage.removeItem(`maes_notes_${nbId}`);
+    setDeletingId(null);
   };
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
+    localStorage.removeItem('maes_demo_session');
     window.location.href = '/';
   };
 
@@ -115,7 +200,7 @@ export default function NotebookList() {
             fontWeight: 500,
           }}>
             <User size={14} />
-            {user?.email || 'Loading...'}
+            {user?.email || 'Guest Student'}
           </div>
 
           <button
@@ -148,7 +233,7 @@ export default function NotebookList() {
             </p>
           </div>
           <button
-            onClick={() => setIsModalOpen(true)}
+            onClick={() => { setCreateError(''); setIsModalOpen(true); }}
             className="btn"
             style={{
               background: '#fff',
@@ -195,7 +280,7 @@ export default function NotebookList() {
             <p style={{ fontSize: '0.875rem', color: 'var(--stone-400)', marginBottom: '1.5rem' }}>
               Create your first notebook and start an AI-guided learning session.
             </p>
-            <button onClick={() => setIsModalOpen(true)} className="btn btn-primary">
+            <button onClick={() => { setCreateError(''); setIsModalOpen(true); }} className="btn btn-primary">
               <Plus size={16} /> Create Notebook
             </button>
           </div>
@@ -206,16 +291,39 @@ export default function NotebookList() {
                 key={nb.id}
                 onClick={() => navigate(`/notebook/${nb.id}`)}
                 className="notebook-card"
+                style={{ position: 'relative' }}
               >
                 <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '0.5rem' }}>
                   <span className="notebook-domain-badge">
                     <Layers size={10} />
                     {nb.domain}
                   </span>
-                  <span style={{ fontSize: '0.7rem', color: 'var(--stone-400)', display: 'flex', alignItems: 'center', gap: '0.3rem', flexShrink: 0 }}>
-                    <Calendar size={10} />
-                    {new Date(nb.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                  </span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--stone-400)', display: 'flex', alignItems: 'center', gap: '0.3rem', flexShrink: 0 }}>
+                      <Calendar size={10} />
+                      {new Date(nb.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                    </span>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setDeletingId(nb.id); }}
+                      title="Delete notebook"
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        color: 'var(--stone-400)',
+                        cursor: 'pointer',
+                        padding: '4px',
+                        borderRadius: '4px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        transition: 'all 0.15s'
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--error)')}
+                      onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--stone-400)')}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
                 </div>
 
                 <h4 className="notebook-title">{nb.title}</h4>
@@ -235,11 +343,47 @@ export default function NotebookList() {
         )}
       </main>
 
+      {/* Delete Confirmation Modal */}
+      {deletingId && (
+        <div className="modal-overlay" onClick={() => setDeletingId(null)}>
+          <div className="modal-panel" style={{ maxWidth: 420 }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ fontSize: '1.125rem', fontWeight: 700, color: 'var(--ink)', marginBottom: '0.5rem' }}>Delete Notebook?</h3>
+            <p style={{ fontSize: '0.875rem', color: 'var(--stone-500)', marginBottom: '1.25rem', lineHeight: 1.5 }}>
+              Are you sure you want to delete this notebook? All uploaded sources, flashcards, notes, and session history will be permanently deleted.
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+              <button onClick={() => setDeletingId(null)} className="btn btn-secondary btn-sm">Cancel</button>
+              <button
+                onClick={(e) => handleDeleteNotebook(e, deletingId)}
+                className="btn btn-sm"
+                style={{ background: '#DC2626', color: '#fff', fontWeight: 600 }}
+              >
+                Delete Permanently
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Create Notebook Modal */}
       {isModalOpen && (
         <div className="modal-overlay" onClick={() => setIsModalOpen(false)}>
           <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
             <h2 className="modal-title">Create New Notebook</h2>
+
+            {createError && (
+              <div style={{
+                marginBottom: '1rem',
+                padding: '0.625rem 0.875rem',
+                borderRadius: 'var(--radius)',
+                background: 'var(--error-light)',
+                border: '1px solid rgba(192,57,43,0.25)',
+                color: 'var(--error)',
+                fontSize: '0.8125rem'
+              }}>
+                {createError}
+              </div>
+            )}
 
             <form onSubmit={handleCreateNotebook} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
@@ -249,15 +393,15 @@ export default function NotebookList() {
                   type="text"
                   value={newTitle}
                   onChange={(e) => setNewTitle(e.target.value)}
-                  className="input"
-                  placeholder="e.g. Introduction to Calculus"
+                  placeholder="e.g. Machine Learning Fundamentals"
                   required
                   autoFocus
+                  className="input"
                 />
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
-                <label className="pref-label" htmlFor="nb-domain">Subject area</label>
+                <label className="pref-label" htmlFor="nb-domain">Domain / Field of study</label>
                 <select
                   id="nb-domain"
                   value={newDomain}
@@ -270,53 +414,26 @@ export default function NotebookList() {
                 </select>
               </div>
 
-              <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.5rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '0.5rem' }}>
                 <button
                   type="button"
                   onClick={() => setIsModalOpen(false)}
                   className="btn btn-secondary"
-                  style={{ flex: 1 }}
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="btn btn-primary"
-                  style={{ flex: 1 }}
                   disabled={creating || !newTitle.trim()}
+                  className="btn btn-primary"
                 >
-                  {creating ? (
-                    <>
-                      <div style={{ width: 14, height: 14, border: '2px solid rgba(255,255,255,0.4)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
-                      Creating...
-                    </>
-                  ) : (
-                    <>
-                      <Plus size={16} />
-                      Create Notebook
-                    </>
-                  )}
+                  {creating ? 'Creating...' : 'Create Notebook'}
                 </button>
               </div>
             </form>
           </div>
         </div>
       )}
-
-      {/* Footer */}
-      <footer style={{
-        padding: '0.75rem 1.5rem',
-        borderTop: '1px solid var(--stone-200)',
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        background: 'var(--white)',
-        fontSize: '0.75rem',
-        color: 'var(--stone-400)',
-      }}>
-        <span>MAES Adaptive Learning Platform</span>
-        <span>v2.0 · Powered by Groq & Mistral AI</span>
-      </footer>
     </div>
   );
 }

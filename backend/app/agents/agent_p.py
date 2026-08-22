@@ -31,6 +31,12 @@ async def run_agent_p(state: dict) -> dict:
     Generates a Socratic counter-question to challenge the student's active misconception.
     Called when Agent B decides PEER_REQUIRED (bloom_stall_count >= 3).
     """
+    try:
+        from app.main import increment_agent_call
+        increment_agent_call("agent_p")
+    except Exception:
+        pass
+
     active_misconception = state.get("active_misconception") or "general conceptual misunderstanding"
     
     payload = {
@@ -47,16 +53,23 @@ async def run_agent_p(state: dict) -> dict:
         {"role": "user", "content": f"Generate a peer epistemic challenge for this state:\n{json.dumps(payload, indent=2)}"}
     ]
 
-    client = AsyncOpenAI(api_key=settings.mistral_api_key, base_url="https://api.mistral.ai/v1")
-    response = await client.chat.completions.create(
-        model=settings.agent_p_model,
-        messages=messages,
-        response_format={"type": "json_object"},
-        temperature=0.6,
-        max_tokens=2000
-    )
-
-    result = repair_and_parse_json(response.choices[0].message.content)
+    try:
+        client = AsyncOpenAI(api_key=settings.mistral_agent_p_key, base_url="https://api.mistral.ai/v1")
+        response = await client.chat.completions.create(
+            model=settings.agent_p_model,
+            messages=messages,
+            response_format={"type": "json_object"},
+            temperature=0.6,
+            max_tokens=2000
+        )
+        result = repair_and_parse_json(response.choices[0].message.content)
+    except Exception as e:
+        result = {
+            "hint_text": "Consider this perspective: could there be a fundamental constraint we overlooked?",
+            "peer_challenge": True,
+            "targeted_misconception": active_misconception,
+            "internal_reasoning": f"Fallback peer challenge: {e}"
+        }
     
     # Log to Neon
     from app.db.neon_client import log_event

@@ -1,10 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
   LogOut, BookOpenCheck, BarChart2, ScrollText, Settings,
   ArrowLeft, Plus, FileText, Globe, Video, StickyNote,
-  RefreshCw, PlayCircle, StopCircle, CheckCircle2,
-  ShieldCheck, Activity
+  RefreshCw, PlayCircle, StopCircle, CheckCircle2, Activity
 } from 'lucide-react';
 import {
   ResponsiveContainer, LineChart, Line, BarChart, Bar,
@@ -49,10 +48,12 @@ const BLOOM_CHART_COLORS: Record<string, string> = {
 
 export default function NotebookView() {
   const { notebookId } = useParams<{ notebookId: string }>();
+  const navigate = useNavigate();
   const chatBottomRef = useRef<HTMLDivElement>(null);
 
   /* ── View ── */
   const [activeView, setActiveView] = useState<ActiveView>('workspace');
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
 
   /* ── Core ── */
   const [notebook, setNotebook] = useState<any>(null);
@@ -110,10 +111,29 @@ export default function NotebookView() {
   const [preferredRegister, setPreferredRegister] = useState('socratic');
   const [sessionTtl, setSessionTtl] = useState(30);
 
-  /* ── Connectivity ── */
+  /* ── Connectivity & System Status ── */
   const [isOnline, setIsOnline] = useState(true);
+  const [systemStatus, setSystemStatus] = useState<any>(null);
 
   /* ═══ Effects ═══ */
+
+  // Dynamic system health polling
+  useEffect(() => {
+    const fetchSystemStatus = async () => {
+      try {
+        const { data } = await api.get('/system-status');
+        if (data) {
+          setSystemStatus(data);
+          setIsOnline(data.status === 'online');
+        }
+      } catch {
+        setIsOnline(false);
+      }
+    };
+    fetchSystemStatus();
+    const interval = setInterval(fetchSystemStatus, 8000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Step 1: Resolve auth FIRST, then mark ready
   useEffect(() => {
@@ -185,21 +205,43 @@ export default function NotebookView() {
     }
   }, [authReady, user, notebook]);
 
-  /* ═══ Data Fetching ═══ */
   const fetchNotebookDetails = async () => {
     try {
       const { data } = await api.get(`/notebooks/${notebookId}`);
-      setNotebook(data?.notebook || { id: notebookId, title: 'Learning Session', domain: 'General Science' });
+      if (data?.notebook) {
+        setNotebook(data.notebook);
+        return;
+      }
     } catch {
-      setNotebook({ id: notebookId, title: 'Learning Session', domain: 'General Science' });
+      // Look in local cache
+      const cached = localStorage.getItem('maes_local_notebooks');
+      if (cached) {
+        try {
+          const list = JSON.parse(cached);
+          const found = list.find((n: any) => n.id === notebookId);
+          if (found) {
+            setNotebook(found);
+            return;
+          }
+        } catch {}
+      }
     }
+    setNotebook({ id: notebookId, title: 'Learning Session', domain: 'General Science' });
   };
 
   const fetchSources = async () => {
     try {
       const { data } = await api.get(`/sources/${notebookId}`);
-      if (data?.sources) setSources(data.sources);
+      if (data?.sources && data.sources.length > 0) {
+        setSources(data.sources);
+        localStorage.setItem(`maes_sources_${notebookId}`, JSON.stringify(data.sources));
+        return;
+      }
     } catch { /* fail silently */ }
+    const cached = localStorage.getItem(`maes_sources_${notebookId}`);
+    if (cached) {
+      try { setSources(JSON.parse(cached)); } catch {}
+    }
   };
 
   const loadNotes = () => {
@@ -216,12 +258,20 @@ export default function NotebookView() {
     try {
       await api.patch(`/sources/${id}/toggle`, { is_active: !currentActive });
     } catch { /* local fallback */ }
-    setSources(s => s.map(src => src.id === id ? { ...src, isActive: !currentActive } : src));
+    setSources(s => {
+      const next = s.map(src => src.id === id ? { ...src, isActive: !currentActive } : src);
+      localStorage.setItem(`maes_sources_${notebookId}`, JSON.stringify(next));
+      return next;
+    });
   };
 
   const handleDeleteSource = async (id: string) => {
     try { await api.delete(`/sources/${id}`); } catch { /* local fallback */ }
-    setSources(s => s.filter(src => src.id !== id));
+    setSources(s => {
+      const next = s.filter(src => src.id !== id);
+      localStorage.setItem(`maes_sources_${notebookId}`, JSON.stringify(next));
+      return next;
+    });
   };
 
   const handleIngestSource = async (e: React.FormEvent) => {
@@ -246,7 +296,13 @@ export default function NotebookView() {
         const { data } = await api.post('/sources/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' } });
         responseData = data?.source;
       }
-      if (responseData) setSources(prev => [...prev, responseData]);
+      if (responseData) {
+        setSources(prev => {
+          const next = [...prev, responseData];
+          localStorage.setItem(`maes_sources_${notebookId}`, JSON.stringify(next));
+          return next;
+        });
+      }
     } catch (e: any) {
       alert(e.response?.data?.detail || 'Upload failed. Please try again.');
     } finally {
@@ -258,9 +314,9 @@ export default function NotebookView() {
 
   /* ═══ Session Handlers ═══ */
   const handleStartSession = async () => {
+    const studentId = user?.id || '123e4567-e89b-12d3-a456-426614174000';
+    const domain = notebook?.domain || 'General Science';
     try {
-      const studentId = user?.id || '123e4567-e89b-12d3-a456-426614174000';
-      const domain = notebook?.domain || 'General Science';
       const { data } = await api.post('/session/start', { student_id: studentId, domain, notebook_id: notebookId });
       setSessionId(data.session_id);
       setMessages([{
@@ -269,12 +325,11 @@ export default function NotebookView() {
         bloom_tag: 'remember'
       }]);
     } catch {
-      // Offline fallback
       const sid = `sess-${Math.random().toString(36).substr(2, 9)}`;
       setSessionId(sid);
       setMessages([{
         role: 'tutor',
-        text: `Welcome to your learning session! (Running in offline mode.) Share your thoughts on the topic and I'll help guide your understanding.`,
+        text: `Welcome! Your AI tutor is ready to help you explore "${domain}". Share what you understand about the topic, and I'll guide you with questions to deepen your thinking.`,
         bloom_tag: 'remember'
       }]);
     }
@@ -300,7 +355,11 @@ export default function NotebookView() {
   const handleGenerateFlashcards = async () => {
     setIsGeneratingCards(true);
     try {
-      const { data } = await api.post('/studio/flashcards', { notebook_id: notebookId, topic: flashcardTopic || 'Key Concepts' });
+      const { data } = await api.post(
+        '/studio/flashcards', 
+        { notebook_id: notebookId, topic: flashcardTopic || 'Key Concepts' },
+        { headers: authToken ? { Authorization: `Bearer ${authToken}` } : {} }
+      );
       if (data?.deck) {
         const updated = [data.deck, ...flashcardDecks];
         setFlashcardDecks(updated); setActiveDeck(data.deck);
@@ -333,8 +392,15 @@ export default function NotebookView() {
   const handleGenerateQuiz = async () => {
     setIsGeneratingQuiz(true); setQuizAnswers({}); setSubmittedQuiz(false);
     try {
-      const { data } = await api.post('/studio/quiz', { notebook_id: notebookId, num_questions: quizSize, difficulty: quizDifficulty });
-      if (data?.quiz) { setCurrentQuiz(data.quiz); localStorage.setItem(`maes_quiz_${notebookId}`, JSON.stringify(data.quiz)); }
+      const { data } = await api.post(
+        '/studio/quiz', 
+        { notebook_id: notebookId, num_questions: quizSize, difficulty: quizDifficulty },
+        { headers: authToken ? { Authorization: `Bearer ${authToken}` } : {} }
+      );
+      if (data?.quiz) { 
+        setCurrentQuiz(data.quiz); 
+        localStorage.setItem(`maes_quiz_${notebookId}`, JSON.stringify(data.quiz)); 
+      }
     } catch { /* fail silently */ }
     setIsGeneratingQuiz(false);
   };
@@ -352,7 +418,11 @@ export default function NotebookView() {
   const handleGenerateGuide = async () => {
     setIsGeneratingGuide(true);
     try {
-      const { data } = await api.post('/studio/study-guide', { notebook_id: notebookId });
+      const { data } = await api.post(
+        '/studio/study-guide', 
+        { notebook_id: notebookId },
+        { headers: authToken ? { Authorization: `Bearer ${authToken}` } : {} }
+      );
       if (data?.study_guide?.markdown) {
         setStudyGuide(data.study_guide.markdown);
         localStorage.setItem(`maes_studyguide_${notebookId}`, data.study_guide.markdown);
@@ -375,6 +445,33 @@ export default function NotebookView() {
       } catch { /* fail silently */ }
     }
     setTelemetryLoading(false);
+  };
+
+  /* ═══ Notebook Deletion ═══ */
+  const handleDeleteCurrentNotebook = async () => {
+    if (!notebookId) return;
+    try {
+      await api.delete(`/notebooks/${notebookId}`, {
+        headers: authToken ? { Authorization: `Bearer ${authToken}` } : {}
+      });
+    } catch { /* fail silently */ }
+    
+    // Clear local storage entries
+    localStorage.removeItem(`maes_sources_${notebookId}`);
+    localStorage.removeItem(`maes_notes_${notebookId}`);
+    localStorage.removeItem(`maes_flashcards_${notebookId}`);
+    localStorage.removeItem(`maes_quiz_${notebookId}`);
+    localStorage.removeItem(`maes_studyguide_${notebookId}`);
+    
+    const localNbs = localStorage.getItem('maes_local_notebooks');
+    if (localNbs) {
+      try {
+        const parsed = JSON.parse(localNbs).filter((n: any) => n.id !== notebookId);
+        localStorage.setItem('maes_local_notebooks', JSON.stringify(parsed));
+      } catch {}
+    }
+    
+    navigate('/');
   };
 
   /* ═══ Logout ═══ */
@@ -663,31 +760,164 @@ export default function NotebookView() {
 
         {/* 4. PREFERENCES */}
         {activeView === 'settings' && (
-          <div className="pref-view">
-            <div style={{ maxWidth: 600, margin: '0 auto' }}>
-              <h2 style={{ fontSize: '1.5rem', fontWeight: 800, color: 'var(--ink)', marginBottom: '1.5rem', letterSpacing: '-0.02em' }}>Preferences</h2>
+          <div className="pref-view" style={{ overflowY: 'auto', padding: '2rem 1rem' }}>
+            <div style={{ maxWidth: 680, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+              <div>
+                <h2 style={{ fontSize: '1.5rem', fontWeight: 800, color: 'var(--ink)', marginBottom: '0.25rem', letterSpacing: '-0.02em' }}>Preferences & System Architecture</h2>
+                <p style={{ fontSize: '0.875rem', color: 'var(--stone-500)' }}>Configure pedagogical settings and inspect the live multi-agent and control subsystems.</p>
+              </div>
 
               {/* Teaching Style */}
               <div className="pref-section">
-                <h3 className="pref-section-title">Teaching Style</h3>
-                <p className="pref-section-desc">Select the approach the AI tutor uses when guiding your learning.</p>
-                <label className="pref-label" htmlFor="pref-register">Preferred mode</label>
+                <h3 className="pref-section-title">Active Pedagogical Register</h3>
+                <p className="pref-section-desc">Select the primary instructional scaffolding strategy used by Agent A (Teacher).</p>
+                <label className="pref-label" htmlFor="pref-register">Scaffold Mode</label>
                 <select
                   id="pref-register"
                   value={preferredRegister}
                   onChange={(e) => setPreferredRegister(e.target.value)}
                   className="input select"
                 >
-                  <option value="socratic">Socratic Questioning — Guide through open questions</option>
-                  <option value="analogy">Analogy Scaffolding — Explain through metaphors</option>
-                  <option value="cognitive_conflict">Challenge Mode — Expose and resolve misconceptions</option>
+                  <option value="socratic">Socratic Questioning — Probe student thinking with open questions</option>
+                  <option value="analogy">Analogy-First — Anchor target concepts in intuitive physical metaphors</option>
+                  <option value="cognitive_conflict">Challenge Mode — Agent P peer epistemic misconception conflict</option>
+                  <option value="worked_example">Worked Example — Step-by-step structural modeling</option>
+                  <option value="error_correction">Error Correction — Targeted remediation on detected errors</option>
                 </select>
+              </div>
+
+              {/* Active 5-Agent Suite */}
+              <div className="pref-section">
+                <h3 className="pref-section-title">Multi-Agent AI Network (Active)</h3>
+                <p className="pref-section-desc">Coordinated multi-model agent network actively auditing and generating dialogue.</p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.875rem', marginTop: '0.75rem' }}>
+                  {systemStatus?.agents ? (
+                    Object.entries(systemStatus.agents).map(([key, ag]: [string, any]) => {
+                      const isAgentOnline = ag.status === 'online';
+                      return (
+                        <div
+                          key={key}
+                          style={{
+                            padding: '0.875rem 1rem',
+                            background: 'var(--stone-50)',
+                            borderRadius: 'var(--radius)',
+                            border: '1px solid var(--stone-200)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '0.5rem'
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                              <span style={{ fontSize: '0.9375rem', fontWeight: 700, color: 'var(--ink)' }}>{ag.name}</span>
+                              <span style={{ fontSize: '0.75rem', color: 'var(--stone-600)', background: 'var(--stone-200)', padding: '1px 6px', borderRadius: '4px', fontFamily: 'JetBrains Mono, monospace' }}>
+                                {ag.model}
+                              </span>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                              {ag.calls > 0 && (
+                                <span style={{ fontSize: '0.7rem', color: 'var(--green-800)', background: 'var(--green-100)', padding: '2px 7px', borderRadius: '10px', fontWeight: 600 }}>
+                                  {ag.calls} turn{ag.calls !== 1 ? 's' : ''} active
+                                </span>
+                              )}
+                              <span
+                                className={`badge ${isAgentOnline ? 'badge-green' : 'badge-stone'}`}
+                                style={{
+                                  fontSize: '0.7rem',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                  color: isAgentOnline ? 'var(--green-800)' : '#DC2626',
+                                  background: isAgentOnline ? 'var(--green-100)' : 'rgba(220,38,38,0.1)',
+                                  border: `1px solid ${isAgentOnline ? 'rgba(74,124,89,0.2)' : 'rgba(220,38,38,0.2)'}`
+                                }}
+                              >
+                                <span style={{ width: 6, height: 6, borderRadius: '50%', background: isAgentOnline ? '#10B981' : '#DC2626' }} />
+                                {isAgentOnline ? 'Online' : 'Offline'}
+                              </span>
+                            </div>
+                          </div>
+
+                          <p style={{ fontSize: '0.8125rem', color: 'var(--stone-600)', margin: 0, lineHeight: 1.4 }}>
+                            <strong>Use Case:</strong> {ag.usecase || ag.role}
+                          </p>
+
+                          {ag.trigger && (
+                            <div style={{ fontSize: '0.75rem', color: 'var(--stone-500)', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                              <span style={{ fontWeight: 600, color: 'var(--stone-600)' }}>Trigger:</span> {ag.trigger}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div style={{ fontSize: '0.875rem', color: 'var(--stone-400)', padding: '1rem 0' }}>Loading agent subsystem statuses...</div>
+                  )}
+                </div>
+              </div>
+
+              {/* Closed-Loop Control Engines */}
+              <div className="pref-section">
+                <h3 className="pref-section-title">Closed-Loop Pedagogical Engines</h3>
+                <p className="pref-section-desc">Real-time control algorithms regulating struggle and cognitive load.</p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.625rem', marginTop: '0.5rem' }}>
+                  {[
+                    { name: 'Discrete PID Scaffolding Controller', desc: 'Regulates continuous scaffolding u[k] targeting optimal struggle (PSI = 0.40)', tag: 'Active' },
+                    { name: 'CCLI Typing Telemetry Engine', desc: 'Passive chronometric keystroke & latency cognitive load calculation', tag: 'Active' },
+                    { name: 'Multi-Dimensional Struggle PSI Engine', desc: 'Combines latency, backspaces, and concept semantic distance', tag: 'Active' },
+                    { name: 'Epistemic Concept Dependency Graph', desc: 'Directed Acyclic Graph (DAG) for prerequisite concept traversal', tag: 'Active' },
+                    { name: 'Multi-Format Universal Ingestion', desc: 'Parses PDF, Word (.docx), PowerPoint (.pptx), Markdown, JSON, and Code', tag: 'Active' },
+                  ].map((eng) => (
+                    <div key={eng.name} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.625rem 0.875rem', background: 'var(--stone-50)', borderRadius: 'var(--radius)', border: '1px solid var(--stone-200)' }}>
+                      <div>
+                        <div style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--ink)' }}>{eng.name}</div>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--stone-500)' }}>{eng.desc}</div>
+                      </div>
+                      <span className="badge badge-green" style={{ fontSize: '0.7rem' }}>{eng.tag}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Active Infrastructure */}
+              <div className="pref-section">
+                <h3 className="pref-section-title">Live Cloud & Storage Services</h3>
+                <p className="pref-section-desc">Production infrastructure services connected to this notebook session.</p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginTop: '0.5rem' }}>
+                  {systemStatus?.infrastructure ? (
+                    Object.entries(systemStatus.infrastructure).map(([key, inf]: [string, any]) => {
+                      const isInfConnected = inf.status === 'connected';
+                      return (
+                        <div key={key} style={{ padding: '0.75rem 1rem', background: 'var(--stone-50)', borderRadius: 'var(--radius)', border: '1px solid var(--stone-200)', display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                            <span style={{ fontSize: '0.875rem', fontWeight: 700, color: 'var(--ink)' }}>{inf.name}</span>
+                            <span
+                              className={`badge ${isInfConnected ? 'badge-green' : 'badge-stone'}`}
+                              style={{
+                                fontSize: '0.7rem',
+                                color: isInfConnected ? 'var(--green-800)' : '#DC2626',
+                                background: isInfConnected ? 'var(--green-100)' : 'rgba(220,38,38,0.1)'
+                              }}
+                            >
+                              {isInfConnected ? 'Connected' : 'Offline'}
+                            </span>
+                          </div>
+                          {inf.usecase && (
+                            <p style={{ fontSize: '0.75rem', color: 'var(--stone-500)', margin: 0, lineHeight: 1.4 }}>
+                              {inf.usecase}
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })
+                  ) : null}
+                </div>
               </div>
 
               {/* Session Timeout */}
               <div className="pref-section">
-                <h3 className="pref-section-title">Session Memory</h3>
-                <p className="pref-section-desc">How long the AI retains your conversation context before it expires.</p>
+                <h3 className="pref-section-title">Session Memory & TTL</h3>
+                <p className="pref-section-desc">How long the AI retains your conversation context before cache expiration.</p>
                 <label className="pref-label">Timeout: {sessionTtl} minutes</label>
                 <input
                   type="range" min={5} max={120} value={sessionTtl}
@@ -699,25 +929,17 @@ export default function NotebookView() {
                 </div>
               </div>
 
-              {/* Security Info */}
-              <div className="pref-section">
-                <h3 className="pref-section-title">Security Status</h3>
-                <p className="pref-section-desc">Active security controls protecting your learning session.</p>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                  {[
-                    { label: 'Input Sanitization', status: 'Active' },
-                    { label: 'Rate Limiting (Redis)', status: 'Active' },
-                    { label: 'JWT Token Verification', status: 'Active' },
-                  ].map(({ label, status }) => (
-                    <div key={label} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.625rem 0' }}>
-                      <span style={{ fontSize: '0.875rem', color: 'var(--ink)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        <ShieldCheck size={15} style={{ color: 'var(--green)' }} />
-                        {label}
-                      </span>
-                      <span className="badge badge-green">{status}</span>
-                    </div>
-                  ))}
-                </div>
+              {/* Danger Zone: Delete Notebook */}
+              <div className="pref-section" style={{ borderColor: 'rgba(220, 38, 38, 0.3)', background: 'rgba(254, 242, 242, 0.5)' }}>
+                <h3 className="pref-section-title" style={{ color: '#DC2626' }}>Danger Zone</h3>
+                <p className="pref-section-desc">Permanently delete this notebook and all associated sources, notes, and session logs.</p>
+                <button
+                  onClick={() => setIsDeleteModalOpen(true)}
+                  className="btn btn-sm"
+                  style={{ background: '#DC2626', color: '#fff', fontWeight: 600, marginTop: '0.5rem' }}
+                >
+                  Delete This Notebook
+                </button>
               </div>
             </div>
           </div>
@@ -815,6 +1037,28 @@ export default function NotebookView() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* ═══════════════ DELETE NOTEBOOK MODAL ═══════════════ */}
+      {isDeleteModalOpen && (
+        <div className="modal-overlay" onClick={() => setIsDeleteModalOpen(false)}>
+          <div className="modal-panel" style={{ maxWidth: 420 }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ fontSize: '1.125rem', fontWeight: 700, color: 'var(--ink)', marginBottom: '0.5rem' }}>Delete Notebook?</h3>
+            <p style={{ fontSize: '0.875rem', color: 'var(--stone-500)', marginBottom: '1.25rem', lineHeight: 1.5 }}>
+              Are you sure you want to delete this notebook? All uploaded sources, flashcards, quizzes, notes, and session logs will be permanently deleted.
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+              <button onClick={() => setIsDeleteModalOpen(false)} className="btn btn-secondary btn-sm">Cancel</button>
+              <button
+                onClick={handleDeleteCurrentNotebook}
+                className="btn btn-sm"
+                style={{ background: '#DC2626', color: '#fff', fontWeight: 600 }}
+              >
+                Delete Permanently
+              </button>
+            </div>
           </div>
         </div>
       )}

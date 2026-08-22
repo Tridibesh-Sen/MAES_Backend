@@ -126,6 +126,75 @@ def test_get_notebooks(mock_get_sb):
     assert response.json()["notebooks"][0]["id"] == VALID_NOTEBOOK_UUID
 
 
+@patch("app.routes.notebooks.get_supabase")
+def test_create_notebook(mock_get_sb):
+    mock_sb = MagicMock()
+    mock_get_sb.return_value = mock_sb
+
+    chain = mock_sb.table.return_value
+    chain.insert.return_value = chain
+    chain.execute.return_value = MagicMock(data=[
+        {
+            "id": VALID_NOTEBOOK_UUID, "title": "Calculus", "domain": "Mathematics",
+            "created_at": "2023-01-01T00:00:00Z", "updated_at": "2023-01-01T00:00:00Z",
+        }
+    ])
+
+    response = client.post(
+        "/notebooks",
+        json={"title": "Calculus", "domain": "Mathematics"},
+        headers=HEADERS,
+    )
+    assert response.status_code == 200
+    assert "notebook" in response.json()
+    assert response.json()["notebook"]["title"] == "Calculus"
+    assert response.json()["notebook"]["id"] == VALID_NOTEBOOK_UUID
+
+
+@patch("app.routes.notebooks.get_supabase")
+def test_delete_notebook(mock_get_sb):
+    mock_sb = MagicMock()
+    mock_get_sb.return_value = mock_sb
+
+    chain = mock_sb.table.return_value
+    chain.delete.return_value = chain
+    chain.eq.return_value = chain
+    chain.execute.return_value = MagicMock(data=[])
+
+    response = client.delete(f"/notebooks/{VALID_NOTEBOOK_UUID}", headers=HEADERS)
+    assert response.status_code == 200
+    assert response.json()["status"] == "deleted"
+    assert response.json()["id"] == VALID_NOTEBOOK_UUID
+
+
+@patch("app.routes.sources.get_supabase")
+@patch("app.services.knowledge_extractor.AsyncOpenAI")
+def test_upload_source(mock_openai, mock_get_sb):
+    mock_sb = MagicMock()
+    mock_get_sb.return_value = mock_sb
+
+    chain = mock_sb.table.return_value
+    chain.select.return_value = chain
+    chain.insert.return_value = chain
+    chain.eq.return_value = chain
+    chain.execute.return_value = MagicMock(data=[
+        {
+            "id": "src-123", "notebook_id": VALID_NOTEBOOK_UUID, "source_type": "note",
+            "title": "notes.txt", "is_active": True, "created_at": "2023-01-01T00:00:00Z"
+        }
+    ])
+
+    response = client.post(
+        "/sources/upload",
+        data={"notebook_id": VALID_NOTEBOOK_UUID},
+        files={"file": ("notes.txt", b"Data Structures and Algorithms Notes", "text/plain")},
+        headers=HEADERS,
+    )
+    assert response.status_code == 200
+    assert "source" in response.json()
+    assert response.json()["source"]["title"] == "notes.txt"
+
+
 # ─── Studio: Flashcard generation ─────────────────────────────────────────────
 # AsyncGroq must be patched at app.services.flashcard_gen (where it is instantiated),
 # NOT at app.routes.studio (which never directly creates the client).
@@ -273,3 +342,60 @@ def test_audit_dashboard_summary():
         response = client.get("/audit/dashboard/summary", headers=HEADERS)
         assert response.status_code == 200
         assert "sessions" in response.json()
+
+
+# ─── Discrete PID Scaffold Controller ──────────────────────────────────────────
+
+def test_pid_scaffold_controller():
+    from app.core.scaffold_controller import PIDScaffoldController
+    ctrl = PIDScaffoldController(target_psi=0.40, kp=0.85, ki=0.20, kd=0.15)
+    
+    # 1. Step response with high struggle (observed PSI = 0.80)
+    u1, reg1, telem1 = ctrl.compute_step(0.80)
+    assert u1 > 0.40
+    assert reg1 in ["worked_example", "error_correction"]
+    assert telem1["error"] == 0.40
+
+    # 2. Step response with low struggle (observed PSI = 0.10)
+    u2, reg2, telem2 = ctrl.compute_step(0.10)
+    assert u2 < u1
+    assert reg2 in ["socratic", "analogy_first"]
+
+
+# ─── PSI Engine ───────────────────────────────────────────────────────────────
+
+def test_psi_engine():
+    from app.core.psi_engine import PSIEngine
+    engine = PSIEngine(alpha=0.40, beta=0.35, gamma=0.25)
+    
+    res = engine.compute_psi(
+        latency_seconds=15.0,
+        backspace_count=5,
+        pause_count=2,
+        student_message="I think maybe the derivative is zero",
+        concept_distance=0.20
+    )
+    assert 0.0 <= res["psi"] <= 1.0
+    assert res["zone"] in ["low_struggle", "productive_struggle", "excessive_struggle"]
+    assert "l_norm" in res["components"]
+
+
+# ─── Epistemic Concept Graph & Decay ──────────────────────────────────────────
+
+def test_epistemic_concept_graph():
+    from app.core.epistemic_graph import EpistemicConceptGraph
+    import datetime
+
+    graph = EpistemicConceptGraph(review_threshold=0.50)
+    graph.add_node("alg_01", "Algebra", domain="Math", decay_rate=0.05)
+    graph.add_node("der_01", "Derivative", domain="Math", prerequisites=["alg_01"])
+
+    # Simulate 30 days of elapsed time on prerequisite
+    t_past = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)
+    graph.nodes["alg_01"].update_mastery(0.80, timestamp=t_past)
+
+    # Decayed mastery should trigger diagnostic review
+    diag = graph.check_diagnostic_review("der_01")
+    assert diag["needs_review"] is True
+    assert diag["weakest_prereq_id"] == "alg_01"
+
