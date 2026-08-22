@@ -11,6 +11,11 @@ function App() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // Clean up wildcard callback in URL if redirected with /*#access_token=...
+    if (window.location.pathname.startsWith('/*')) {
+      window.history.replaceState(null, '', '/' + window.location.search + window.location.hash);
+    }
+
     const checkAuth = async () => {
       try {
         const { data: { session: sbSession } } = await supabase.auth.getSession();
