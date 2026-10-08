@@ -153,24 +153,35 @@ export default function ChatPanel({
                 });
                 chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
               } else if (currentEvent === 'dvs' || 'svg' in data) {
-                dvsPending = data.svg;
+                if (data.svg) {
+                  dvsPending = data.svg;
+                }
               } else if (currentEvent === 'done' || 'bloom_tag' in data) {
                 const finalBloom = data.bloom_tag;
                 const finalReg = data.register;
                 const isPeer = data.peer_challenge;
+                const activeDvs = dvsPending;
+                dvsPending = null;
+
                 setMessages(prev => {
                   const updated = [...prev];
                   const lastTutor = [...updated].reverse().findIndex(m => m.role === 'tutor');
                   if (lastTutor >= 0) {
                     const idx = updated.length - 1 - lastTutor;
-                    updated[idx] = { ...updated[idx], text: streamedText, bloom_tag: finalBloom, streaming: false, role: isPeer ? 'peer' : 'tutor' };
+                    updated[idx] = { 
+                      ...updated[idx], 
+                      text: streamedText || updated[idx].text, 
+                      bloom_tag: finalBloom, 
+                      streaming: false, 
+                      role: isPeer ? 'peer' : 'tutor' 
+                    };
+                  }
+                  if (activeDvs) {
+                    updated.push({ role: 'dvs', text: '', dvs_payload: activeDvs });
                   }
                   return updated;
                 });
-                if (dvsPending) {
-                  setMessages(prev => [...prev, { role: 'dvs', text: '', dvs_payload: dvsPending! }]);
-                  dvsPending = null;
-                }
+
                 if (finalReg) setCurrentRegister(finalReg);
                 setStatusMsg(null);
               } else if (currentEvent === 'error' || 'error' in data) {
@@ -276,13 +287,19 @@ export default function ChatPanel({
           </div>
         ) : (
           messages.map((msg, idx) => {
-            if (msg.role === 'dvs' && msg.dvs_payload) {
+            if (msg.role === 'dvs') {
+              if (!msg.dvs_payload) return null;
               return (
-                <div key={idx} className="chat-dvs-wrapper">
+                <div key={idx} className="chat-dvs-wrapper" style={{ margin: '0.75rem 0' }}>
                   <DVSViewer svgPayload={msg.dvs_payload} />
                 </div>
               );
             }
+
+            if (!msg.text && !msg.streaming) {
+              return null;
+            }
+
             const isPeer = msg.role === 'peer';
             const isStudent = msg.role === 'student';
             return (
@@ -309,6 +326,11 @@ export default function ChatPanel({
                 </div>
                 <div className={`chat-bubble ${isStudent ? 'chat-bubble--student' : isPeer ? 'chat-bubble--peer' : 'chat-bubble--tutor'}`}>
                   <p className="chat-bubble-text">{msg.text}</p>
+                  {msg.dvs_payload && (
+                    <div style={{ marginTop: '0.75rem' }}>
+                      <DVSViewer svgPayload={msg.dvs_payload} />
+                    </div>
+                  )}
                 </div>
               </div>
             );

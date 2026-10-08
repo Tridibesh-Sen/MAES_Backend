@@ -46,8 +46,9 @@ async def extract_knowledge(raw_text: str) -> dict:
     ]
 
     try:
+        model_to_use = settings.agent_a_model or "codestral-latest"
         response = await client.chat.completions.create(
-            model="mistral-large-latest",
+            model=model_to_use,
             messages=messages,
             response_format={"type": "json_object"},
             temperature=0.2,

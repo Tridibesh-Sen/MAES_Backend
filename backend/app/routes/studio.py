@@ -123,14 +123,15 @@ Use clear markdown formatting. Be educational and comprehensive."""
 
     try:
         client = AsyncGroq(api_key=settings.groq_agent_b_key or settings.groq_api_key)
+        model_to_use = settings.agent_b_model or "qwen/qwen3.8-27b"
         response = await client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=model_to_use,
             messages=[
                 {"role": "system", "content": STUDY_GUIDE_SYSTEM},
                 {"role": "user", "content": f"Generate a study guide from this source material:\n\n{context[:12000]}"}
             ],
             temperature=0.4,
-            max_tokens=2500
+            max_tokens=950
         )
         markdown_content = response.choices[0].message.content
         
