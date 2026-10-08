@@ -19,8 +19,8 @@ RUBRIC CRITERIA:
 5. Non-Leakage: In 'socratic' or 'analogy_first' registers, ensure the teacher DOES NOT leak the final answer prematurely.
 
 DECISION RULES:
+- If the student explicitly or implicitly asks for a diagram, flowchart, visual, schema, illustration, drawing, or visual representation, OR the student's chronometric_load_score > 0.60: set decision = "DVS_REQUIRED" (trigger visual schema).
 - If current_register is 'socratic' and Agent A revealed the complete final solution or direct computation: set decision = "REQUEST_REVISION" with correction_note = "Do not reveal the final answer; ask a guiding Socratic question instead."
-- If the student's chronometric_load_score > 0.7: set decision = "DVS_REQUIRED" (trigger visual schema).
 - If the student's bloom_stall_count >= 3: set decision = "PEER_REQUIRED" (trigger peer challenge).
 - If avg rubric score >= 3.5 AND correctness >= 4: set decision = "APPROVE".
 - Otherwise: set decision = "REQUEST_REVISION".
@@ -140,6 +140,15 @@ async def run_agent_b(state: dict) -> dict:
                 "bloom_alignment": 4
             }
         }
+
+    # Explicit visual intent check or high cognitive load
+    student_msg_lower = state.get("student_message", "").lower()
+    visual_triggers = ["diagram", "flowchart", "visual", "draw", "svg", "chart", "schema", "picture", "illustration", "illustrate", "visualize", "show me visually", "block diagram", "schematic"]
+    has_visual_intent = any(w in student_msg_lower for w in visual_triggers)
+    cls_score = state.get("chronometric_load_score", 0.0)
+
+    if (has_visual_intent or cls_score > 0.65) and result.get("decision") not in ["REQUEST_REVISION"]:
+        result["decision"] = "DVS_REQUIRED"
 
     try:
         from app.main import record_agent_execution
