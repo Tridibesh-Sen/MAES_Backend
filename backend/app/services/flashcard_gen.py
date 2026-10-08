@@ -43,11 +43,12 @@ Generate between 5 and 10 flashcards."""
     try:
         # Primary: Groq LLaMA 3.3 70B
         client = AsyncGroq(api_key=settings.groq_agent_b_key or settings.groq_api_key)
+        model_to_use = settings.agent_b_model or "qwen/qwen3.8-27b"
         response = await client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=model_to_use,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
-            max_tokens=1500,
+            max_tokens=950,
             response_format={"type": "json_object"}
         )
         content = response.choices[0].message.content
