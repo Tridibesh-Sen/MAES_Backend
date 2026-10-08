@@ -67,7 +67,7 @@ Generate an SVG diagram that visually explains the core concept they are struggl
                         {"role": "user", "content": user_prompt}
                     ],
                     temperature=0.3,
-                    max_tokens=2000
+                    max_tokens=950
                 )
                 raw = response.choices[0].message.content.strip()
                 if raw and "<svg" in raw:
@@ -89,7 +89,7 @@ Generate an SVG diagram that visually explains the core concept they are struggl
                         {"role": "user", "content": user_prompt}
                     ],
                     temperature=0.3,
-                    max_tokens=2000
+                    max_tokens=3500
                 )
                 raw = response.choices[0].message.content.strip()
                 if raw and "<svg" in raw:
@@ -109,28 +109,43 @@ Generate an SVG diagram that visually explains the core concept they are struggl
         return {**state, "dvs_payload": None}
 
     try:
-
-        # Extract SVG block robustly
-        svg_match = re.search(r'<svg[\s\S]*?</svg>', raw, re.IGNORECASE)
-        svg_payload = svg_match.group(0) if svg_match else None
+        # Robust SVG extraction and sanitization
+        cleaned = re.sub(r'```(?:svg|xml|html)?', '', raw).replace('```', '').strip()
+        svg_match = re.search(r'<svg[\s\S]*?</svg>', cleaned, re.IGNORECASE)
+        
+        if svg_match:
+            svg_payload = svg_match.group(0).strip()
+        elif "<svg" in cleaned:
+            start_idx = cleaned.find("<svg")
+            svg_payload = cleaned[start_idx:].strip()
+            if "</svg>" not in svg_payload:
+                svg_payload += "</svg>"
+        else:
+            svg_payload = None
 
         if not svg_payload:
             logger.warning("[DVS] LLM did not return a valid SVG block.")
             return {**state, "dvs_payload": None}
 
+        if "xmlns=" not in svg_payload:
+            svg_payload = svg_payload.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"', 1)
+        if "viewBox=" not in svg_payload and "viewbox=" not in svg_payload:
+            svg_payload = svg_payload.replace("<svg", '<svg viewBox="0 0 800 500"', 1)
+
         # Log the DVS event to Neon
         try:
             from app.db.neon_client import get_neon_pool, log_event
             pool = get_neon_pool()
-            async with pool.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO dvs_events (session_id, trigger_reason, svg_payload)
-                    VALUES ($1, $2, $3)
-                """,
-                    state.get("session_id", ""),
-                    f"CLS:{state.get('chronometric_load_score', 0.0):.2f} | misconception: {active_misconception[:80]}",
-                    svg_payload
-                )
+            if pool:
+                async with pool.acquire() as conn:
+                    await conn.execute("""
+                        INSERT INTO dvs_events (session_id, trigger_reason, svg_payload)
+                        VALUES ($1, $2, $3)
+                    """,
+                        state.get("session_id", ""),
+                        f"CLS:{state.get('chronometric_load_score', 0.0):.2f} | misconception: {active_misconception[:80]}",
+                        svg_payload
+                    )
             
             await log_event(
                 session_id=state.get("session_id", ""),
