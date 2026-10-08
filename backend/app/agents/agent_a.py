@@ -81,47 +81,87 @@ async def run_agent_a(state: dict) -> dict:
         {"role": "user", "content": prompt_text}
     ]
 
-    try:
-        # Mistral client for Agent A
-        client = AsyncOpenAI(api_key=settings.mistral_agent_a_key, base_url="https://api.mistral.ai/v1")
-        response = await client.chat.completions.create(
-            model=settings.agent_a_model,
-            messages=messages,
-            response_format={"type": "json_object"},
-            temperature=0.7,
-            max_tokens=1500
-        )
-        draft = repair_and_parse_json(response.choices[0].message.content)
-    except Exception as e:
-        logger.warning(f"Agent A Mistral call failed ({e}). Attempting Groq fallback.")
-        try:
-            groq_client = AsyncGroq(api_key=settings.groq_agent_b_key)
-            response = await groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=messages,
-                response_format={"type": "json_object"},
-                temperature=0.7,
-                max_tokens=1500
-            )
-            draft = repair_and_parse_json(response.choices[0].message.content)
-        except Exception as e2:
-            logger.warning(f"Agent A fallback failed ({e2}). Using in-memory scaffolding.")
-            reg = state.get("current_register", "socratic")
-            msg = state.get("student_message", "")
-            if reg == "analogy_first":
-                hint_txt = f"Let's think about this conceptually: how would you relate \"{msg}\" to an everyday physical process before diving into calculations?"
-            elif reg == "worked_example":
-                hint_txt = f"Let's break this down into clear logical steps. Step 1: Identify your givens and the core relationship at play. What is the first principle you can apply here?"
-            elif reg == "error_correction":
-                hint_txt = f"Let's review the core definition relevant to \"{msg}\". Notice where the standard formula differs from the current assumption."
-            else:
-                hint_txt = f"That's a thoughtful question on \"{msg}\". What fundamental rule or relationship connecting these terms comes to mind first?"
+    draft = None
+    mistral_key = settings.mistral_agent_a_key or settings.mistral_api_key
+    groq_key = settings.groq_agent_b_key or settings.groq_api_key
 
-            draft = {
-                "hint_text": hint_txt,
-                "internal_reasoning": f"Generated under {reg} register.",
-                "estimated_bloom_level": "understand"
-            }
+    used_model = None
+    agent_status = "online"
+
+    # 1. Primary: Mistral AI (try configured model, then accessible fallbacks)
+    if mistral_key:
+        mistral_models = [settings.agent_a_model, "codestral-latest", "ministral-8b-latest"]
+        mistral_models = list(dict.fromkeys([m for m in mistral_models if m]))
+        client = AsyncOpenAI(api_key=mistral_key, base_url="https://api.mistral.ai/v1")
+        
+        for model_name in mistral_models:
+            try:
+                response = await client.chat.completions.create(
+                    model=model_name,
+                    messages=messages,
+                    response_format={"type": "json_object"},
+                    temperature=0.7,
+                    max_tokens=1500
+                )
+                draft = repair_and_parse_json(response.choices[0].message.content)
+                if draft and draft.get("hint_text"):
+                    used_model = model_name
+                    agent_status = "online"
+                    break
+            except Exception as e:
+                logger.warning(f"Agent A Mistral call ({model_name}) failed: {e}")
+
+    # 2. Secondary: Groq Fallback
+    if not draft or not draft.get("hint_text"):
+        if groq_key:
+            groq_models = [settings.agent_b_model, "qwen/qwen3.8-27b", "openai/gpt-oss-120b", "llama-3.3-70b-versatile"]
+            groq_models = list(dict.fromkeys([m for m in groq_models if m]))
+            groq_client = AsyncGroq(api_key=groq_key)
+            
+            for g_model in groq_models:
+                try:
+                    response = await groq_client.chat.completions.create(
+                        model=g_model,
+                        messages=messages,
+                        response_format={"type": "json_object"},
+                        temperature=0.7,
+                        max_tokens=1500
+                    )
+                    draft = repair_and_parse_json(response.choices[0].message.content)
+                    if draft and draft.get("hint_text"):
+                        used_model = f"Groq {g_model}"
+                        agent_status = "fallback"
+                        break
+                except Exception as e2:
+                    logger.warning(f"Agent A Groq fallback ({g_model}) failed: {e2}")
+
+    # 3. Tertiary: In-memory dynamic scaffolding if all external APIs are unreachable
+    if not draft or not draft.get("hint_text"):
+        logger.warning("Agent A all LLM providers failed. Using in-memory scaffolding.")
+        used_model = "In-Memory Scaffolding"
+        agent_status = "fallback"
+        reg = state.get("current_register", "socratic")
+        msg = state.get("student_message", "")
+        if reg == "analogy_first":
+            hint_txt = f"Let's think about this conceptually: how would you relate \"{msg}\" to an everyday physical process before diving into calculations?"
+        elif reg == "worked_example":
+            hint_txt = f"Let's break this down into clear logical steps. Step 1: Identify your givens and the core relationship at play. What is the first principle you can apply here?"
+        elif reg == "error_correction":
+            hint_txt = f"Let's review the core definition relevant to \"{msg}\". Notice where the standard formula differs from the current assumption."
+        else:
+            hint_txt = f"That's a thoughtful question on \"{msg}\". What fundamental rule or relationship connecting these terms comes to mind first?"
+
+        draft = {
+            "hint_text": hint_txt,
+            "internal_reasoning": f"Generated under {reg} register.",
+            "estimated_bloom_level": "understand"
+        }
+
+    try:
+        from app.main import record_agent_execution
+        record_agent_execution("agent_a", agent_status, used_model or settings.agent_a_model)
+    except Exception:
+        pass
     
     # Log to Neon
     try:

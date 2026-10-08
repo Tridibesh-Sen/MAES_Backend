@@ -793,15 +793,24 @@ export default function NotebookView() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.875rem', marginTop: '0.75rem' }}>
                   {systemStatus?.agents ? (
                     Object.entries(systemStatus.agents).map(([key, ag]: [string, any]) => {
-                      const isAgentOnline = ag.status === 'online';
+                      const status = ag.status || 'offline';
+                      const isOnline = status === 'online';
+                      const isFallback = status === 'fallback';
+
+                      const badgeColor = isOnline ? 'var(--green-800)' : isFallback ? '#DC2626' : 'var(--stone-600)';
+                      const badgeBg = isOnline ? 'var(--green-100)' : isFallback ? 'rgba(220, 38, 38, 0.12)' : 'var(--stone-200)';
+                      const badgeBorder = isOnline ? 'rgba(74, 124, 89, 0.25)' : isFallback ? 'rgba(220, 38, 38, 0.35)' : 'rgba(0, 0, 0, 0.1)';
+                      const dotColor = isOnline ? '#10B981' : isFallback ? '#DC2626' : '#9CA3AF';
+                      const statusLabel = isOnline ? 'Active' : isFallback ? 'Fallback' : 'Offline';
+
                       return (
                         <div
                           key={key}
                           style={{
                             padding: '0.875rem 1rem',
-                            background: 'var(--stone-50)',
+                            background: isFallback ? 'rgba(254, 242, 242, 0.6)' : 'var(--stone-50)',
                             borderRadius: 'var(--radius)',
-                            border: '1px solid var(--stone-200)',
+                            border: `1px solid ${isFallback ? 'rgba(239, 68, 68, 0.3)' : 'var(--stone-200)'}`,
                             display: 'flex',
                             flexDirection: 'column',
                             gap: '0.5rem'
@@ -810,30 +819,50 @@ export default function NotebookView() {
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                               <span style={{ fontSize: '0.9375rem', fontWeight: 700, color: 'var(--ink)' }}>{ag.name}</span>
-                              <span style={{ fontSize: '0.75rem', color: 'var(--stone-600)', background: 'var(--stone-200)', padding: '1px 6px', borderRadius: '4px', fontFamily: 'JetBrains Mono, monospace' }}>
+                              <span
+                                style={{
+                                  fontSize: '0.75rem',
+                                  color: isFallback ? '#B91C1C' : 'var(--stone-600)',
+                                  background: isFallback ? 'rgba(254, 226, 226, 0.8)' : 'var(--stone-200)',
+                                  border: isFallback ? '1px solid rgba(239, 68, 68, 0.2)' : 'none',
+                                  padding: '1px 6px',
+                                  borderRadius: '4px',
+                                  fontFamily: 'JetBrains Mono, monospace'
+                                }}
+                              >
                                 {ag.model}
                               </span>
                             </div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                               {ag.calls > 0 && (
-                                <span style={{ fontSize: '0.7rem', color: 'var(--green-800)', background: 'var(--green-100)', padding: '2px 7px', borderRadius: '10px', fontWeight: 600 }}>
-                                  {ag.calls} turn{ag.calls !== 1 ? 's' : ''} active
+                                <span
+                                  style={{
+                                    fontSize: '0.7rem',
+                                    color: isFallback ? '#B91C1C' : 'var(--green-800)',
+                                    background: isFallback ? 'rgba(254, 226, 226, 0.8)' : 'var(--green-100)',
+                                    padding: '2px 7px',
+                                    borderRadius: '10px',
+                                    fontWeight: 600
+                                  }}
+                                >
+                                  {ag.calls} turn{ag.calls !== 1 ? 's' : ''} {isFallback ? 'fallback' : 'active'}
                                 </span>
                               )}
                               <span
-                                className={`badge ${isAgentOnline ? 'badge-green' : 'badge-stone'}`}
+                                className="badge"
                                 style={{
                                   fontSize: '0.7rem',
                                   display: 'flex',
                                   alignItems: 'center',
                                   gap: '4px',
-                                  color: isAgentOnline ? 'var(--green-800)' : '#DC2626',
-                                  background: isAgentOnline ? 'var(--green-100)' : 'rgba(220,38,38,0.1)',
-                                  border: `1px solid ${isAgentOnline ? 'rgba(74,124,89,0.2)' : 'rgba(220,38,38,0.2)'}`
+                                  color: badgeColor,
+                                  background: badgeBg,
+                                  border: `1px solid ${badgeBorder}`,
+                                  fontWeight: 600
                                 }}
                               >
-                                <span style={{ width: 6, height: 6, borderRadius: '50%', background: isAgentOnline ? '#10B981' : '#DC2626' }} />
-                                {isAgentOnline ? 'Online' : 'Offline'}
+                                <span style={{ width: 6, height: 6, borderRadius: '50%', background: dotColor }} />
+                                {statusLabel}
                               </span>
                             </div>
                           </div>
