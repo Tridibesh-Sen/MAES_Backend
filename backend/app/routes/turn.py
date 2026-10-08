@@ -185,9 +185,13 @@ async def process_turn(
 
             # Phase 3 Component 5: Stream the hint word-by-word via Groq
             try:
-                groq_client = AsyncGroq(api_key=settings.groq_agent_b_key)
+                groq_key = settings.groq_agent_b_key or settings.groq_api_key
+                if not groq_key:
+                    raise ValueError("No Groq API key available for streaming")
+                groq_client = AsyncGroq(api_key=groq_key)
+                stream_model = settings.agent_b_model or "qwen/qwen3.8-27b"
                 stream = await groq_client.chat.completions.create(
-                    model="llama-3.1-8b-instant",
+                    model=stream_model,
                     messages=[
                         {"role": "system", "content": "Restate the following hint clearly and naturally for a student. Do not change the meaning, and if the hint contains questions, a quiz, or a list, you MUST preserve them exactly. Output plain text only, no JSON."},
                         {"role": "user", "content": hint}

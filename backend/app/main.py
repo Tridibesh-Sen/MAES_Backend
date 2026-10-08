@@ -32,20 +32,27 @@ app.include_router(studio.router, tags=["Studio"])
 app.include_router(audit.router, tags=["Audit"])
 app.include_router(simulate.router, tags=["Simulation"])
 
-# Track runtime invocation counters
+# Track runtime invocation counters and live fallback state
 runtime_agent_stats = {
-    "agent_a_calls": 0,
-    "agent_b_calls": 0,
-    "agent_p_calls": 0,
-    "agent_s_calls": 0,
-    "dvs_calls": 0,
+    "agent_a": {"calls": 0, "status": "online", "model": "codestral-latest"},
+    "agent_b": {"calls": 0, "status": "online", "model": "qwen/qwen3.8-27b"},
+    "agent_p": {"calls": 0, "status": "online", "model": "codestral-latest"},
+    "agent_s": {"calls": 0, "status": "online", "model": "ministral-8b-latest"},
+    "dvs": {"calls": 0, "status": "online", "model": "qwen/qwen3.8-27b"},
     "last_active": None
 }
 
+def record_agent_execution(agent_name: str, status: str, model_name: str):
+    """Updates runtime stats with exact model and online/fallback status."""
+    if agent_name in runtime_agent_stats and isinstance(runtime_agent_stats[agent_name], dict):
+        runtime_agent_stats[agent_name]["calls"] += 1
+        runtime_agent_stats[agent_name]["status"] = status
+        runtime_agent_stats[agent_name]["model"] = model_name
+    runtime_agent_stats["last_active"] = agent_name
+
 def increment_agent_call(agent_name: str):
-    key = f"{agent_name}_calls"
-    if key in runtime_agent_stats:
-        runtime_agent_stats[key] += 1
+    if agent_name in runtime_agent_stats and isinstance(runtime_agent_stats[agent_name], dict):
+        runtime_agent_stats[agent_name]["calls"] += 1
     runtime_agent_stats["last_active"] = agent_name
 
 @app.get("/")
@@ -59,18 +66,26 @@ async def get_system_status():
     from app.db.neon_client import get_neon_pool
     from app.db.supabase_client import get_supabase
     
-    agent_a_ok = bool(settings.mistral_agent_a_key or settings.mistral_api_key)
-    agent_b_ok = bool(settings.groq_agent_b_key or settings.groq_api_key)
-    agent_p_ok = bool(settings.mistral_agent_p_key or settings.mistral_api_key)
-    agent_s_ok = bool(settings.mistral_agent_s_key or settings.mistral_api_key)
-    dvs_ok = bool(settings.groq_dvs_key or settings.groq_api_key)
+    agent_a_key_ok = bool(settings.mistral_agent_a_key or settings.mistral_api_key)
+    agent_b_key_ok = bool(settings.groq_agent_b_key or settings.groq_api_key)
+    agent_p_key_ok = bool(settings.mistral_agent_p_key or settings.mistral_api_key)
+    agent_s_key_ok = bool(settings.mistral_agent_s_key or settings.mistral_api_key)
+    dvs_key_ok = bool(settings.groq_dvs_key or settings.groq_api_key)
     
     neon_ok = get_neon_pool() is not None
     supabase_ok = get_supabase() is not None
     upstash_ok = bool(settings.upstash_redis_rest_url and settings.upstash_redis_rest_token)
     gemini_ok = bool(settings.gemini_api_key)
     
-    is_online = agent_a_ok and agent_b_ok
+    def get_status(agent_key: str, key_ok: bool) -> str:
+        if not key_ok:
+            return "offline"
+        return runtime_agent_stats.get(agent_key, {}).get("status", "online")
+    
+    def get_model(agent_key: str, default_model: str) -> str:
+        return runtime_agent_stats.get(agent_key, {}).get("model", default_model)
+
+    is_online = agent_a_key_ok and agent_b_key_ok
     
     return {
         "status": "online" if is_online else "offline",
@@ -78,48 +93,48 @@ async def get_system_status():
         "agents": {
             "agent_a": {
                 "name": "Agent A (Teacher)",
-                "model": "Mistral Large",
+                "model": get_model("agent_a", settings.agent_a_model),
                 "role": "Dynamic Scaffolding & Hint Generation",
                 "usecase": "Formulates personalized Socratic prompts, conceptual analogies, and targeted scaffolding hints calibrated to the student's cognitive model and PID struggle score.",
                 "trigger": "Executes on every active student dialogue turn.",
-                "status": "online" if agent_a_ok else "offline",
-                "calls": runtime_agent_stats["agent_a_calls"]
+                "status": get_status("agent_a", agent_a_key_ok),
+                "calls": runtime_agent_stats["agent_a"]["calls"]
             },
             "agent_b": {
                 "name": "Agent B (Auditor)",
-                "model": "Groq LLaMA 3.3 70B",
+                "model": get_model("agent_b", settings.agent_b_model),
                 "role": "Rubric Compliance & Non-Leakage Auditor",
                 "usecase": "Validates Agent A drafts in real-time. Detects direct answer leakage, evaluates Bloom alignment, forces register switches, and triggers Peer or DVS agents.",
                 "trigger": "Intercepts and audits every draft before final student transmission.",
-                "status": "online" if agent_b_ok else "offline",
-                "calls": runtime_agent_stats["agent_b_calls"]
+                "status": get_status("agent_b", agent_b_key_ok),
+                "calls": runtime_agent_stats["agent_b"]["calls"]
             },
             "agent_p": {
                 "name": "Agent P (Peer Perspective)",
-                "model": "Mistral Large",
+                "model": get_model("agent_p", settings.agent_p_model),
                 "role": "Epistemic Misconception Conflict",
                 "usecase": "Simulates a fellow student perspective to introduce cognitive conflict and challenge deep-seated misconceptions, prompting self-correction.",
                 "trigger": "Triggered by Agent B when student exhibits Bloom stall >= 3 turns.",
-                "status": "online" if agent_p_ok else "offline",
-                "calls": runtime_agent_stats["agent_p_calls"]
+                "status": get_status("agent_p", agent_p_key_ok),
+                "calls": runtime_agent_stats["agent_p"]["calls"]
             },
             "agent_s": {
                 "name": "Agent S (Fallback Agent)",
-                "model": "Mistral 7B",
+                "model": get_model("agent_s", settings.fallback_model),
                 "role": "Emergency High-Availability Redundancy",
                 "usecase": "Guarantees zero-downtime tutoring responses with sub-second fallback synthesis if primary models encounter rate limits or upstream timeouts.",
                 "trigger": "Activated automatically on upstream latency or API failure.",
-                "status": "online" if agent_s_ok else "offline",
-                "calls": runtime_agent_stats["agent_s_calls"]
+                "status": get_status("agent_s", agent_s_key_ok),
+                "calls": runtime_agent_stats["agent_s"]["calls"]
             },
             "dvs": {
                 "name": "DVS Visual Generator",
-                "model": "Groq LLaMA 3.1 8B",
+                "model": get_model("dvs", "qwen/qwen3.8-27b"),
                 "role": "Inline Dynamic SVG Diagram Generator",
                 "usecase": "Synthesizes custom vector diagrams, flowcharts, and structural SVG concept maps to ground complex abstract knowledge in visual intuition.",
                 "trigger": "Triggered when CCLI typing telemetry indicates elevated cognitive load (> 0.70).",
-                "status": "online" if dvs_ok else "offline",
-                "calls": runtime_agent_stats["dvs_calls"]
+                "status": get_status("dvs", dvs_key_ok),
+                "calls": runtime_agent_stats["dvs"]["calls"]
             }
         },
         "infrastructure": {

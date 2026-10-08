@@ -34,9 +34,12 @@ async def detect_and_log_misconception(
     Called as a BackgroundTask after each turn.
     """
     try:
-        client = AsyncGroq(api_key=settings.groq_api_key)
+        groq_key = settings.groq_api_key or settings.groq_agent_b_key
+        if not groq_key:
+            return
+        client = AsyncGroq(api_key=groq_key)
         response = await client.chat.completions.create(
-            model=settings.agent_a_model,
+            model=settings.agent_b_model,
             messages=[
                 {"role": "system", "content": GCD_CLASSIFY_PROMPT},
                 {"role": "user", "content": f"Student message: \"{student_message}\"\nBloom level detected: {bloom_tag}"}

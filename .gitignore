@@ -175,4 +175,6 @@ node_modules/
 dist/
 backend/backend/
 DOC-*.pdf
+results/
+generate_experiment_reports.py
 

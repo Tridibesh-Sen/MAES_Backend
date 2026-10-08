@@ -30,10 +30,10 @@ class Settings(BaseSettings):
     groq_dvs_key: str = ""
     
     # Model selections
-    agent_a_model: str = "mistral-large-latest"
-    agent_b_model: str = "llama-3.3-70b-versatile"
-    agent_p_model: str = "mistral-large-latest"
-    fallback_model: str = "open-mistral-7b"
+    agent_a_model: str = "codestral-latest"
+    agent_b_model: str = "qwen/qwen3.8-27b"
+    agent_p_model: str = "codestral-latest"
+    fallback_model: str = "ministral-8b-latest"
     
     session_ttl_minutes: int = 30
 

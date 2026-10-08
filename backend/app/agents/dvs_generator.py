@@ -48,19 +48,67 @@ Their known misconception: {active_misconception}
 
 Generate an SVG diagram that visually explains the core concept they are struggling with. Make it clear, labeled, and educational. Output ONLY the raw SVG, starting with <svg."""
 
-    try:
-        client = AsyncGroq(api_key=settings.groq_dvs_key)
-        response = await client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[
-                {"role": "system", "content": DVS_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.3,
-            max_tokens=2000
-        )
+    groq_key = settings.groq_dvs_key or settings.groq_api_key
+    mistral_key = settings.mistral_agent_a_key or settings.mistral_api_key
+    raw = None
 
-        raw = response.choices[0].message.content.strip()
+    used_model = None
+    agent_status = "online"
+
+    if groq_key:
+        groq_models = ["qwen/qwen3.8-27b", "openai/gpt-oss-120b", "llama-3.1-8b-instant"]
+        client = AsyncGroq(api_key=groq_key)
+        for g_model in groq_models:
+            try:
+                response = await client.chat.completions.create(
+                    model=g_model,
+                    messages=[
+                        {"role": "system", "content": DVS_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    temperature=0.3,
+                    max_tokens=2000
+                )
+                raw = response.choices[0].message.content.strip()
+                if raw and "<svg" in raw:
+                    used_model = g_model
+                    agent_status = "online"
+                    break
+            except Exception as e:
+                logger.warning(f"[DVS] Groq generation ({g_model}) failed: {e}")
+
+    if (not raw or "<svg" not in raw) and mistral_key:
+        from openai import AsyncOpenAI
+        mistral_client = AsyncOpenAI(api_key=mistral_key, base_url="https://api.mistral.ai/v1")
+        for m_model in ["codestral-latest", "ministral-8b-latest"]:
+            try:
+                response = await mistral_client.chat.completions.create(
+                    model=m_model,
+                    messages=[
+                        {"role": "system", "content": DVS_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    temperature=0.3,
+                    max_tokens=2000
+                )
+                raw = response.choices[0].message.content.strip()
+                if raw and "<svg" in raw:
+                    used_model = f"Mistral {m_model}"
+                    agent_status = "fallback"
+                    break
+            except Exception as e:
+                logger.warning(f"[DVS] Mistral fallback ({m_model}) failed: {e}")
+
+    try:
+        from app.main import record_agent_execution
+        record_agent_execution("dvs", agent_status if raw else "fallback", used_model or "Groq DVS")
+    except Exception:
+        pass
+
+    if not raw:
+        return {**state, "dvs_payload": None}
+
+    try:
 
         # Extract SVG block robustly
         svg_match = re.search(r'<svg[\s\S]*?</svg>', raw, re.IGNORECASE)

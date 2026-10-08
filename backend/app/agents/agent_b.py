@@ -67,45 +67,85 @@ async def run_agent_b(state: dict) -> dict:
         {"role": "user", "content": "EVALUATE THIS:\n" + json.dumps(payload)}
     ]
 
-    try:
-        # Primary: Groq client for Agent B
-        client = AsyncGroq(api_key=settings.groq_agent_b_key)
-        response = await client.chat.completions.create(
-            model=settings.agent_b_model,
-            messages=messages,
-            response_format={"type": "json_object"},
-            temperature=0.1,
-            max_tokens=2000
-        )
-        result = repair_and_parse_json(response.choices[0].message.content)
-    except Exception as e:
-        logger.warning(f"Agent B Groq call failed ({e}). Attempting Mistral fallback.")
-        try:
-            mistral_client = AsyncOpenAI(api_key=settings.mistral_agent_a_key, base_url="https://api.mistral.ai/v1")
-            response = await mistral_client.chat.completions.create(
-                model="mistral-large-latest",
-                messages=messages,
-                response_format={"type": "json_object"},
-                temperature=0.1,
-                max_tokens=2000
-            )
-            result = repair_and_parse_json(response.choices[0].message.content)
-        except Exception as e2:
-            logger.warning(f"Agent B fallback failed ({e2}). Approving with default rubric.")
-            result = {
-                "decision": "APPROVE",
-                "correction_note": None,
-                "register_switch": None,
-                "struggle_level": "productive",
-                "bloom_tag_student": "understand",
-                "bloom_tag_hint": "understand",
-                "rubric_scores": {
-                    "hint_quality": 4,
-                    "tone": 5,
-                    "correctness": 5,
-                    "bloom_alignment": 4
-                }
+    result = None
+    groq_key = settings.groq_agent_b_key or settings.groq_api_key
+    mistral_key = settings.mistral_agent_a_key or settings.mistral_api_key
+
+    used_model = None
+    agent_status = "online"
+
+    # 1. Primary: Groq Auditor
+    if groq_key:
+        groq_models = [settings.agent_b_model, "qwen/qwen3.8-27b", "openai/gpt-oss-120b", "llama-3.3-70b-versatile"]
+        groq_models = list(dict.fromkeys([m for m in groq_models if m]))
+        client = AsyncGroq(api_key=groq_key)
+        
+        for g_model in groq_models:
+            try:
+                response = await client.chat.completions.create(
+                    model=g_model,
+                    messages=messages,
+                    response_format={"type": "json_object"},
+                    temperature=0.1,
+                    max_tokens=2000
+                )
+                result = repair_and_parse_json(response.choices[0].message.content)
+                if result and result.get("decision"):
+                    used_model = g_model
+                    agent_status = "online"
+                    break
+            except Exception as e:
+                logger.warning(f"Agent B Groq call ({g_model}) failed: {e}")
+
+    # 2. Secondary: Mistral Fallback
+    if not result or not result.get("decision"):
+        if mistral_key:
+            mistral_models = [settings.agent_a_model, "codestral-latest", "ministral-8b-latest"]
+            mistral_models = list(dict.fromkeys([m for m in mistral_models if m]))
+            mistral_client = AsyncOpenAI(api_key=mistral_key, base_url="https://api.mistral.ai/v1")
+            
+            for m_model in mistral_models:
+                try:
+                    response = await mistral_client.chat.completions.create(
+                        model=m_model,
+                        messages=messages,
+                        response_format={"type": "json_object"},
+                        temperature=0.1,
+                        max_tokens=2000
+                    )
+                    result = repair_and_parse_json(response.choices[0].message.content)
+                    if result and result.get("decision"):
+                        used_model = f"Mistral {m_model}"
+                        agent_status = "fallback"
+                        break
+                except Exception as e2:
+                    logger.warning(f"Agent B Mistral fallback ({m_model}) failed: {e2}")
+
+    # 3. Tertiary: Default Approval
+    if not result or not result.get("decision"):
+        logger.warning("Agent B fallback failed on all providers. Approving with default rubric.")
+        used_model = "Rule-based Approval"
+        agent_status = "fallback"
+        result = {
+            "decision": "APPROVE",
+            "correction_note": None,
+            "register_switch": None,
+            "struggle_level": "productive",
+            "bloom_tag_student": "understand",
+            "bloom_tag_hint": "understand",
+            "rubric_scores": {
+                "hint_quality": 4,
+                "tone": 5,
+                "correctness": 5,
+                "bloom_alignment": 4
             }
+        }
+
+    try:
+        from app.main import record_agent_execution
+        record_agent_execution("agent_b", agent_status, used_model or settings.agent_b_model)
+    except Exception:
+        pass
 
     try:
         from app.db.neon_client import log_event

@@ -53,23 +53,75 @@ async def run_agent_p(state: dict) -> dict:
         {"role": "user", "content": f"Generate a peer epistemic challenge for this state:\n{json.dumps(payload, indent=2)}"}
     ]
 
-    try:
-        client = AsyncOpenAI(api_key=settings.mistral_agent_p_key, base_url="https://api.mistral.ai/v1")
-        response = await client.chat.completions.create(
-            model=settings.agent_p_model,
-            messages=messages,
-            response_format={"type": "json_object"},
-            temperature=0.6,
-            max_tokens=2000
-        )
-        result = repair_and_parse_json(response.choices[0].message.content)
-    except Exception as e:
+    result = None
+    mistral_key = settings.mistral_agent_p_key or settings.mistral_api_key
+    groq_key = settings.groq_agent_b_key or settings.groq_api_key
+
+    used_model = None
+    agent_status = "online"
+
+    # 1. Primary: Mistral
+    if mistral_key:
+        mistral_models = [settings.agent_p_model, "codestral-latest", "ministral-8b-latest"]
+        mistral_models = list(dict.fromkeys([m for m in mistral_models if m]))
+        client = AsyncOpenAI(api_key=mistral_key, base_url="https://api.mistral.ai/v1")
+        
+        for m_model in mistral_models:
+            try:
+                response = await client.chat.completions.create(
+                    model=m_model,
+                    messages=messages,
+                    response_format={"type": "json_object"},
+                    temperature=0.6,
+                    max_tokens=2000
+                )
+                result = repair_and_parse_json(response.choices[0].message.content)
+                if result and result.get("hint_text"):
+                    used_model = m_model
+                    agent_status = "online"
+                    break
+            except Exception:
+                pass
+
+    # 2. Secondary: Groq Fallback
+    if not result or not result.get("hint_text"):
+        if groq_key:
+            from groq import AsyncGroq
+            groq_models = [settings.agent_b_model, "qwen/qwen3.8-27b", "openai/gpt-oss-120b"]
+            groq_models = list(dict.fromkeys([m for m in groq_models if m]))
+            groq_client = AsyncGroq(api_key=groq_key)
+            for g_model in groq_models:
+                try:
+                    response = await groq_client.chat.completions.create(
+                        model=g_model,
+                        messages=messages,
+                        response_format={"type": "json_object"},
+                        temperature=0.6,
+                        max_tokens=2000
+                    )
+                    result = repair_and_parse_json(response.choices[0].message.content)
+                    if result and result.get("hint_text"):
+                        used_model = f"Groq {g_model}"
+                        agent_status = "fallback"
+                        break
+                except Exception:
+                    pass
+
+    if not result or not result.get("hint_text"):
+        used_model = "Rule-based Peer Prompt"
+        agent_status = "fallback"
         result = {
             "hint_text": "Consider this perspective: could there be a fundamental constraint we overlooked?",
             "peer_challenge": True,
             "targeted_misconception": active_misconception,
-            "internal_reasoning": f"Fallback peer challenge: {e}"
+            "internal_reasoning": "Fallback peer challenge triggered."
         }
+
+    try:
+        from app.main import record_agent_execution
+        record_agent_execution("agent_p", agent_status, used_model or settings.agent_p_model)
+    except Exception:
+        pass
     
     # Log to Neon
     from app.db.neon_client import log_event
